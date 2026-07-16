@@ -67,6 +67,9 @@ fn terminal_clipboard_paste_text(cx: &mut App, paste_images_as_paths: bool) -> O
     }
 
     let item = cx.read_from_clipboard()?;
+    if let Some(text) = terminal_clipboard_external_paths_text(&item) {
+        return Some(text);
+    }
     let text = item
         .text()
         .filter(|text| !paste_images_as_paths || !clipboard_text_looks_like_image_payload(text));
@@ -82,6 +85,15 @@ fn terminal_clipboard_paste_text(cx: &mut App, paste_images_as_paths: bool) -> O
                 .ok()
                 .map(|path| terminal_path_input(&path))
         }
+        _ => None,
+    })
+}
+
+fn terminal_clipboard_external_paths_text(item: &ClipboardItem) -> Option<String> {
+    // IDEs and file managers advertise both a display name and the actual paths. A terminal needs
+    // the paths so copying a directory behaves consistently with dropping it into the terminal.
+    item.entries().iter().find_map(|entry| match entry {
+        ClipboardEntry::ExternalPaths(paths) => terminal_paths_input(paths.paths()),
         _ => None,
     })
 }

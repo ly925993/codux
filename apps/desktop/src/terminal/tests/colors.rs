@@ -138,6 +138,24 @@ fn terminal_clipboard_image_payload_uses_rich_format_reading() {
     );
 }
 #[test]
+fn terminal_clipboard_external_paths_override_plain_text() {
+    let paths = vec![PathBuf::from("/tmp/codux source")];
+    let mut item = ClipboardItem::new_string("source".to_string());
+    // IDEA places both the directory name and its file-system path on the macOS pasteboard.
+    item.entries
+        .push(ClipboardEntry::ExternalPaths(ExternalPaths(
+            paths.clone().into(),
+        )));
+
+    assert_eq!(
+        terminal_clipboard_external_paths_text(&item),
+        Some("'/tmp/codux source' ".to_string())
+    );
+
+    let plain_text = ClipboardItem::new_string("echo ready".to_string());
+    assert_eq!(terminal_clipboard_external_paths_text(&plain_text), None);
+}
+#[test]
 fn terminal_path_input_quotes_spaces() {
     assert_eq!(
         terminal_path_input(Path::new("/tmp/codux image.png")),

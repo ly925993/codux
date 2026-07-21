@@ -63,6 +63,7 @@ impl RemoteHostRuntime {
             .get("rows")
             .and_then(Value::as_u64)
             .map(|value| value as u16);
+        let project_env = project_env_from_payload(envelope.payload.get("projectEnv"));
         let mut config = remote_terminal_pty_config(
             &scope,
             TerminalPtyConfig {
@@ -72,31 +73,17 @@ impl RemoteHostRuntime {
                 cwd,
                 cols,
                 rows,
+                project_env,
                 ..Default::default()
             },
             self.support_dir.clone(),
         );
         apply_terminal_osc_color_env(&mut config, &envelope.payload);
-        self.apply_host_osc_color_fallback(&mut config);
         Ok(RemoteTerminalPlan {
             config,
             scope,
             title,
         })
-    }
-
-    // Spawn paths whose envelope carries no viewer colors fall back to the
-    // host theme so ConPTY still answers light correctly.
-    pub(super) fn apply_host_osc_color_fallback(&self, config: &mut TerminalPtyConfig) {
-        if let Ok(colors) = self.terminal_osc_colors.lock()
-            && let Some((foreground, background)) = colors.as_ref()
-        {
-            let env = config.env.get_or_insert_with(Default::default);
-            env.entry("DMUX_TERMINAL_OSC_FG".to_string())
-                .or_insert_with(|| foreground.clone());
-            env.entry("DMUX_TERMINAL_OSC_BG".to_string())
-                .or_insert_with(|| background.clone());
-        }
     }
 
     pub(super) fn ensure_remote_terminal_started(
@@ -161,7 +148,7 @@ impl RemoteHostRuntime {
             .saved_remote_terminal_id(&scope.layout_key)
             .or_else(|| Some(remote_terminal_id_for_scope(scope)));
         let title = "Terminal".to_string();
-        let mut config = remote_terminal_pty_config(
+        let config = remote_terminal_pty_config(
             scope,
             TerminalPtyConfig {
                 terminal_id: terminal_id.clone(),
@@ -170,8 +157,6 @@ impl RemoteHostRuntime {
             },
             self.support_dir.clone(),
         );
-        self.apply_host_osc_color_fallback(&mut config);
-        let config = config;
         let runtime = Arc::clone(self);
         let emit = move |event| {
             runtime.handle_terminal_event(event);
@@ -234,28 +219,11 @@ impl RemoteHostRuntime {
         if layout_key.trim().is_empty() {
             return;
         }
-        let service = TerminalLayoutService::new(self.support_dir.clone());
-        let layout = service.load(Some(layout_key));
-        if layout
-            .top_panes
-            .iter()
-            .any(|pane| pane.terminal_id == terminal_id)
-            || layout.tabs.iter().any(|tab| tab.terminal_id == terminal_id)
-        {
-            return;
-        }
-        let title = if title.trim().is_empty() {
-            "Terminal"
-        } else {
-            title.trim()
-        };
-        let mut layout = layout;
-        layout.top_panes.push(TerminalPaneSummary {
-            title: title.to_string(),
-            terminal_id: terminal_id.to_string(),
-        });
-        layout.tabs.clear();
-        let _ = service.save_summary(layout_key, layout);
+        let _ = TerminalLayoutService::new(self.support_dir.clone()).ensure_terminal(
+            layout_key,
+            terminal_id,
+            title,
+        );
     }
 
     pub(super) fn remote_project_scope_with_worktree(
@@ -301,6 +269,7 @@ impl RemoteHostRuntime {
         Ok(RemoteProjectScope {
             project_id: project.id.clone(),
             project_name: project.name.clone(),
+            root_project_path: project.path.clone(),
             project_path: worktree_path,
             worktree_id: worktree_id.clone(),
             layout_key: terminal_layout_storage_key(&project.id, &worktree_id),
@@ -352,6 +321,7 @@ impl RemoteHostRuntime {
         RemoteProjectScope {
             project_id: project_id.clone(),
             project_name: default_project_name(path),
+            root_project_path: path.to_string(),
             project_path: path.to_string(),
             worktree_id: worktree_id.clone(),
             layout_key: terminal_layout_storage_key(&project_id, &worktree_id),
@@ -949,6 +919,21 @@ impl RemoteHostRuntime {
     }
 }
 
+fn project_env_from_payload(value: Option<&Value>) -> Option<HashMap<String, String>> {
+    let object = value?.as_object()?;
+    let env = object
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.trim(), value))
+                .filter(|(key, _)| !key.is_empty())
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+    (!env.is_empty()).then_some(env)
+}
+
 /// Adapts the desktop host to the shared remote-terminal router
 /// ([`RemoteTerminalDispatch`]). It holds the host (so the create arm can clone
 /// an `Arc` for its output-event closure) and the inbound envelope (so each
@@ -974,6 +959,7 @@ pub(super) fn remote_terminal_pty_config(
     });
     config.cwd = Some(cwd);
     config.root_project_id = Some(scope.project_id.clone());
+    config.root_project_path = Some(scope.root_project_path.clone());
     config.project_id = Some(scope.worktree_id.clone());
     config.worktree_id = Some(scope.worktree_id.clone());
     config.project_name = Some(scope.project_name.clone());

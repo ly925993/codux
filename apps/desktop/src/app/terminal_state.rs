@@ -1129,6 +1129,7 @@ pub(in crate::app) fn terminal_launch_context(
     let launch_artifacts = launch_artifact_paths(&workspace_id);
     Some(TerminalLaunchContext {
         root_project_id: project.id.clone(),
+        root_project_path: PathBuf::from(&project.path),
         project_id: workspace_id,
         project_name: workspace_name,
         project_path: PathBuf::from(workspace_path),
@@ -1148,6 +1149,11 @@ pub(in crate::app) fn terminal_launch_context(
         memory_prompt_file: Some(launch_artifacts.prompt_file),
         memory_index_file: Some(launch_artifacts.index_file),
         runtime_target: project.runtime_target.clone(),
+        environment_variables: project
+            .environment_variables
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     })
 }
 
@@ -1304,7 +1310,21 @@ pub(in crate::app) fn prepare_memory_launch_artifacts(
     let Some(project) = &state.selected_project else {
         return;
     };
-    let _ = service.prepare_memory_launch_artifacts(&project.id, &project.name, &project.path);
+    let worktree = super::ai_runtime_status::selected_worktree_info(state);
+    let workspace_id = worktree
+        .as_ref()
+        .map(|worktree| worktree.id.as_str())
+        .unwrap_or(&project.id);
+    let workspace_path = worktree
+        .as_ref()
+        .map(|worktree| worktree.path.as_str())
+        .unwrap_or(&project.path);
+    let _ = service.prepare_workspace_memory_launch_artifacts(
+        &project.id,
+        workspace_id,
+        &project.name,
+        workspace_path,
+    );
 }
 
 pub(in crate::app) fn terminal_pane_summary(slot: &TerminalPaneSlot) -> TerminalPaneSummary {

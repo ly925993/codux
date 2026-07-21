@@ -46,6 +46,65 @@ mod tests {
     }
 
     #[test]
+    fn claude_missing_timestamps_do_not_follow_index_time() {
+        let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("session.jsonl");
+        fs::write(
+            &file_path,
+            r#"{"type":"user","sessionId":"s1","cwd":"/tmp/project-a","message":{"content":"hello"}}
+{"type":"assistant","sessionId":"s1","cwd":"/tmp/project-a","uuid":"a1","message":{"model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":50}}}
+"#,
+        )
+        .unwrap();
+        let project = AIHistoryProjectRequest {
+            id: "project-1".to_string(),
+            name: "Project".to_string(),
+            path: "/tmp/project-a".to_string(),
+        };
+
+        let first = parse_claude_history_file_snapshot(&project, &file_path, 0, None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let second = parse_claude_history_file_snapshot(&project, &file_path, 0, None);
+
+        assert_eq!(first.result.events[0].timestamp, second.result.events[0].timestamp);
+        assert_eq!(first.result.entries[0].timestamp, second.result.entries[0].timestamp);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_without_store_is_stable_when_source_mtime_changes() {
+        let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
+        let project_path = "/tmp/project-a";
+        let log_dir = root.join(".claude/projects/-tmp-project-a");
+        fs::create_dir_all(&log_dir).unwrap();
+        let file_path = log_dir.join("session.jsonl");
+        let contents = r#"{"type":"user","sessionId":"s1","cwd":"/tmp/project-a","message":{"content":"hello"}}
+{"type":"assistant","sessionId":"s1","cwd":"/tmp/project-a","uuid":"a1","message":{"model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":50}}}
+"#;
+        fs::write(&file_path, contents).unwrap();
+        let project = AIHistoryProjectRequest {
+            id: "project-1".to_string(),
+            name: "Project".to_string(),
+            path: project_path.to_string(),
+        };
+
+        let mut first =
+            load_project_history_without_store(project.clone(), &root, &mut |_, _| {});
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&file_path, contents).unwrap();
+        let mut second = load_project_history_without_store(project, &root, &mut |_, _| {});
+
+        first.indexed_at = 0.0;
+        second.indexed_at = 0.0;
+        assert_eq!(
+            serde_json::to_value(first).unwrap(),
+            serde_json::to_value(second).unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn codex_uses_state_database_before_recursive_scan() {
         let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
         let project_path = root.join("project-a").to_string_lossy().to_string();
@@ -1679,6 +1738,111 @@ runtime launch context
     }
 
     #[test]
+    fn parses_current_kimi_index_and_incremental_turn_usage() {
+        let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
+        let project_path = root.join("project-a").to_string_lossy().to_string();
+        let other_project_path = root.join("project-b").to_string_lossy().to_string();
+        let share_dir = root.join(".kimi-code");
+        let session_dir = share_dir.join("sessions/project-key/session-current");
+        let other_session_dir = share_dir.join("sessions/other-key/session-other");
+        let agent_dir = session_dir.join("agents/main");
+        let other_agent_dir = other_session_dir.join("agents/main");
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::create_dir_all(&other_agent_dir).unwrap();
+        fs::write(
+            session_dir.join("state.json"),
+            serde_json::json!({ "title": "Current Kimi Session" }).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            agent_dir.join("wire.jsonl"),
+            [
+                serde_json::json!({
+                    "type": "config.update",
+                    "modelAlias": "kimi-code/k3",
+                    "thinkingEffort": "on",
+                    "time": 1_784_382_046_042_i64
+                })
+                .to_string(),
+                serde_json::json!({
+                    "type": "turn.prompt",
+                    "input": [{ "type": "text", "text": "hello current kimi" }],
+                    "time": 1_784_382_046_992_i64
+                })
+                .to_string(),
+                serde_json::json!({
+                    "type": "usage.record",
+                    "model": "kimi-code/k3",
+                    "usage": {
+                        "inputOther": 10,
+                        "output": 5,
+                        "inputCacheRead": 20,
+                        "inputCacheCreation": 3
+                    },
+                    "usageScope": "turn",
+                    "time": 1_784_382_081_647_i64
+                })
+                .to_string(),
+                serde_json::json!({
+                    "type": "usage.record",
+                    "model": "kimi-code/k3",
+                    "usage": {
+                        "inputOther": 4,
+                        "output": 2,
+                        "inputCacheRead": 30,
+                        "inputCacheCreation": 1
+                    },
+                    "usageScope": "turn",
+                    "time": 1_784_382_082_647_i64
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(other_agent_dir.join("wire.jsonl"), "{}\n").unwrap();
+        fs::write(
+            share_dir.join("session_index.jsonl"),
+            [
+                serde_json::json!({
+                    "sessionId": "session-current",
+                    "sessionDir": session_dir.display().to_string(),
+                    "workDir": project_path
+                })
+                .to_string(),
+                serde_json::json!({
+                    "sessionId": "session-other",
+                    "sessionDir": other_session_dir.display().to_string(),
+                    "workDir": other_project_path
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let snapshot = load_project_history_without_store(
+            AIHistoryProjectRequest {
+                id: "project-1".to_string(),
+                name: "Project".to_string(),
+                path: project_path,
+            },
+            &root,
+            &mut |_, _| {},
+        );
+
+        assert_eq!(snapshot.project_summary.project_total_tokens, 21);
+        assert_eq!(snapshot.project_summary.project_cached_input_tokens, 54);
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.sessions[0].external_session_id.as_deref(), Some("session-current"));
+        assert_eq!(snapshot.sessions[0].last_model.as_deref(), Some("kimi-code/k3"));
+        assert_eq!(snapshot.sessions[0].request_count, 1);
+        assert_eq!(snapshot.sessions[0].total_input_tokens, 14);
+        assert_eq!(snapshot.sessions[0].total_output_tokens, 7);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn agy_history_uses_antigravity_conversation_db_only() {
         let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
         let project_path = root.join("project-a").to_string_lossy().to_string();
@@ -1687,6 +1851,114 @@ runtime launch context
         fs::write(conversations_dir.join("not-a-conversation.json"), "{}").unwrap();
 
         assert!(agy_session_paths(&project_path, &root).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn aggregates_omp_incremental_usage_cost_and_current_title() {
+        let root = std::env::temp_dir().join(format!("codux-history-test-{}", Uuid::new_v4()));
+        let project_path = root.join("project-a").to_string_lossy().to_string();
+        let sessions = root.join(".omp/agent/sessions/-project-a");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("session.jsonl"),
+            [
+                serde_json::json!({
+                    "type": "title",
+                    "v": 1,
+                    "title": "Current OMP title",
+                    "updatedAt": "2026-07-19T01:04:00Z",
+                    "pad": ""
+                }),
+                serde_json::json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": "omp-session-1",
+                    "timestamp": "2026-07-19T01:00:00Z",
+                    "cwd": project_path,
+                    "title": "Stale title"
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "timestamp": "2026-07-19T01:00:01Z",
+                    "message": { "role": "user" }
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "timestamp": "2026-07-19T01:00:02Z",
+                    "message": {
+                        "role": "assistant",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-5",
+                        "usage": {
+                            "input": 3,
+                            "output": 191,
+                            "cacheRead": 5,
+                            "cacheWrite": 1684,
+                            "cost": { "total": 0.009189 }
+                        }
+                    }
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "timestamp": "2026-07-19T01:00:03Z",
+                    "message": {
+                        "role": "assistant",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-5",
+                        "usage": {
+                            "input": 7,
+                            "output": 11,
+                            "cacheRead": 13,
+                            "cacheWrite": 17,
+                            "cost": { "total": 0.01 }
+                        }
+                    }
+                }),
+            ]
+            .into_iter()
+            .map(|row| row.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        )
+        .unwrap();
+
+        let snapshot = load_project_history_without_store(
+            AIHistoryProjectRequest {
+                id: "project-1".to_string(),
+                name: "Project".to_string(),
+                path: project_path,
+            },
+            &root,
+            &mut |_, _| {},
+        );
+
+        assert_eq!(snapshot.project_summary.project_total_tokens, 212);
+        assert_eq!(snapshot.project_summary.project_cached_input_tokens, 1_719);
+        assert_eq!(snapshot.sessions.len(), 1);
+        let session = &snapshot.sessions[0];
+        assert_eq!(session.external_session_id.as_deref(), Some("omp-session-1"));
+        assert_eq!(session.session_title, "Current OMP title");
+        assert_eq!(session.last_tool.as_deref(), Some("omp"));
+        assert_eq!(session.last_model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(session.request_count, 1);
+        assert_eq!(session.total_input_tokens, 10);
+        assert_eq!(session.total_output_tokens, 202);
+        assert_eq!(session.cached_input_tokens, 1_719);
+        assert_eq!(session.usage_amounts[0].unit, "USD");
+        assert!((session.usage_amounts[0].value - 0.019189).abs() < 0.000_000_1);
+        assert!(
+            snapshot
+                .tool_breakdown
+                .iter()
+                .any(|item| item.key == "omp" && item.total_tokens == 212)
+        );
+        assert!(
+            snapshot
+                .model_breakdown
+                .iter()
+                .any(|item| item.key == "claude-sonnet-4-5" && item.total_tokens == 212)
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

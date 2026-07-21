@@ -14,6 +14,7 @@ pub struct AIRuntimeToolDriver {
     pub aliases: &'static [&'static str],
     pub process_names: &'static [&'static str],
     pub wrapper_bins: &'static [&'static str],
+    pub initial_prompt_args: &'static [&'static str],
     pub liveness_from_process: bool,
     pub screen_starts_idle: bool,
     pub screen_patterns: AIRuntimeScreenPatterns,
@@ -24,6 +25,12 @@ pub struct AIRuntimeToolDriver {
     pub lifecycle_hook_format: AIRuntimeLifecycleHookFormat,
     pub lifecycle_hooks: &'static [AIRuntimeLifecycleHookDefinition],
     pub lifecycle_config: Option<AIRuntimeLifecycleConfigDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AIRuntimeInitialPromptLaunch {
+    pub command: String,
+    pub env: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +115,7 @@ pub enum AIRuntimeLifecycleHookFormat {
 pub enum AIRuntimeMemoryInjectionDriver {
     None,
     CodexDeveloperInstructions,
-    ClaudeAppendSystemPrompt,
-    #[serde(rename = "kimiAgentFile")]
-    KimiAgentFile,
+    AppendSystemPrompt,
     #[serde(rename = "opencodeSystemTransform")]
     OpenCodeSystemTransform,
 }
@@ -188,6 +193,44 @@ pub fn canonical_tool_name(tool: &str) -> Option<&'static str> {
             driver.id == normalized || driver.aliases.iter().any(|alias| *alias == normalized)
         })
         .map(|driver| driver.id)
+}
+
+pub fn initial_prompt_command(tool: &str, prompt_argument: &str) -> Option<String> {
+    let driver = runtime_tool_driver(tool)?;
+    let executable = driver.wrapper_bins.first()?;
+    Some(
+        std::iter::once(*executable)
+            .chain(driver.initial_prompt_args.iter().copied())
+            .chain(std::iter::once(prompt_argument))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+pub fn initial_prompt_launch(
+    tool: &str,
+    prompt_path: &std::path::Path,
+) -> Option<AIRuntimeInitialPromptLaunch> {
+    let driver = runtime_tool_driver(tool)?;
+    driver.wrapper_bins.first()?;
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "CODUX_AGENT_WORKTREE_TOOL".to_string(),
+        driver.id.to_string(),
+    );
+    env.insert(
+        "CODUX_AGENT_WORKTREE_PROMPT_FILE".to_string(),
+        prompt_path.display().to_string(),
+    );
+    env.insert(
+        "CODUX_AGENT_WORKTREE_AUTONOMOUS".to_string(),
+        "1".to_string(),
+    );
+    #[cfg(windows)]
+    let command = "& (Join-Path $env:DMUX_WRAPPER_BIN '..\\codux-wrapper-helper.exe') --codux-wrapper-helper agent-worktree-launch".to_string();
+    #[cfg(not(windows))]
+    let command = "\"$DMUX_WRAPPER_BIN/../codux-wrapper-helper\" --codux-wrapper-helper agent-worktree-launch; exec \"$SHELL\" -i -l".to_string();
+    Some(AIRuntimeInitialPromptLaunch { command, env })
 }
 
 pub fn canonical_command_tool_name(command: &str) -> Option<&'static str> {
@@ -278,6 +321,7 @@ mod tests {
         assert_eq!(canonical_tool_name("claude-code"), Some("claude"));
         assert_eq!(canonical_tool_name("reclaude"), Some("claude"));
         assert_eq!(canonical_tool_name("agy"), Some("agy"));
+        assert_eq!(canonical_tool_name("omp"), Some("omp"));
         assert_eq!(canonical_tool_name("codewhale"), Some("codewhale"));
         assert_eq!(canonical_tool_name("kimi-code"), Some("kimi"));
         assert_eq!(canonical_tool_name("mimo"), Some("mimo"));
@@ -287,6 +331,32 @@ mod tests {
         assert_eq!(canonical_command_tool_name("kiro"), None);
         assert_eq!(canonical_command_tool_name("kiro-cli"), Some("kiro"));
         assert_eq!(canonical_process_tool_name("kiro-cli-chat"), Some("kiro"));
+    }
+
+    #[test]
+    fn initial_prompt_commands_use_driver_metadata() {
+        assert_eq!(
+            initial_prompt_command("codex", "$(cat prompt)"),
+            Some("codex $(cat prompt)".to_string())
+        );
+        assert_eq!(
+            initial_prompt_command("opencode", "$(cat prompt)"),
+            Some("opencode run $(cat prompt)".to_string())
+        );
+        assert_eq!(
+            initial_prompt_command("mimo", "$(cat prompt)"),
+            Some("mimo run $(cat prompt)".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_worktree_launch_requests_autonomous_permissions() {
+        let launch = initial_prompt_launch("codex", std::path::Path::new("/tmp/prompt.txt"))
+            .expect("codex launch");
+        assert_eq!(
+            launch.env.get("CODUX_AGENT_WORKTREE_AUTONOMOUS"),
+            Some(&"1".to_string())
+        );
     }
 
     #[test]
@@ -496,6 +566,7 @@ mod tests {
             .find(|tool| tool.id == "codewhale")
             .unwrap();
         let kimi = config.tools.iter().find(|tool| tool.id == "kimi").unwrap();
+        let omp = config.tools.iter().find(|tool| tool.id == "omp").unwrap();
 
         assert_eq!(
             codex.memory_injection,
@@ -503,15 +574,16 @@ mod tests {
         );
         assert_eq!(
             claude.memory_injection,
-            AIRuntimeMemoryInjectionDriver::ClaudeAppendSystemPrompt
+            AIRuntimeMemoryInjectionDriver::AppendSystemPrompt
         );
         assert_eq!(
             codewhale.memory_injection,
             AIRuntimeMemoryInjectionDriver::None
         );
+        assert_eq!(kimi.memory_injection, AIRuntimeMemoryInjectionDriver::None);
         assert_eq!(
-            kimi.memory_injection,
-            AIRuntimeMemoryInjectionDriver::KimiAgentFile
+            omp.memory_injection,
+            AIRuntimeMemoryInjectionDriver::AppendSystemPrompt
         );
         assert!(
             codewhale
@@ -529,7 +601,7 @@ mod tests {
     fn active_drivers_do_not_use_legacy_global_hook_configs() {
         for driver in ai_runtime_tool_drivers() {
             match driver.id {
-                "codex" | "claude" | "kimi" | "kiro" | "agy" => {
+                "codex" | "claude" | "kimi" | "kiro" | "agy" | "omp" => {
                     assert!(
                         matches!(driver.hook, AIRuntimeToolHookDriver::None),
                         "{} must not modify global CLI hook configs",

@@ -65,10 +65,7 @@ impl CoduxApp {
             .map(TerminalLaunchContext::to_config)
             .unwrap_or_default();
         let terminal_config = terminal_config_for_settings(&state.settings, window.appearance());
-        runtime_service.set_remote_terminal_osc_colors(
-            terminal_config.colors.foreground_osc_payload(),
-            terminal_config.colors.background_osc_payload(),
-        );
+        runtime_service.set_terminal_query_colors(terminal_config.colors.query_colors());
         let terminal_manager = runtime_service.terminal_manager();
         let terminal_pane_registry = HashMap::new();
         // Boot restore runs during App construction, before a `Context<Self>`
@@ -469,6 +466,8 @@ impl CoduxApp {
             project_editor_badge_color_hex: PROJECT_BADGE_COLORS[0].to_string(),
             project_editor_saving: false,
             project_editor_runtime_target: ProjectRuntimeTarget::Local,
+            project_editor_environment_variables: Vec::new(),
+            project_editor_next_environment_variable_id: 1,
             wsl_distribution_catalog: None,
             wsl_distribution_catalog_loading: false,
             wsl_selected_distribution: String::new(),

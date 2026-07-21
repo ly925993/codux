@@ -652,6 +652,7 @@ fn project_and_worktree_switch_runs_runtime_activation_layout_pty_ai_and_git_flo
     let terminal_manager = service.terminal_manager();
     let launch_context = TerminalLaunchContext {
         root_project_id: "project-a".to_string(),
+        root_project_path: project_a_dir.clone(),
         project_id: "worktree-a".to_string(),
         project_name: "Task A".to_string(),
         project_path: worktree_a_dir.clone(),
@@ -668,6 +669,7 @@ fn project_and_worktree_switch_runs_runtime_activation_layout_pty_ai_and_git_flo
         memory_prompt_file: None,
         memory_index_file: None,
         runtime_target: Default::default(),
+        environment_variables: Default::default(),
     };
     let mut config = launch_context.to_config();
     config.shell = Some("/bin/cat".to_string());

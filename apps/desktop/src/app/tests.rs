@@ -299,6 +299,7 @@ fn restored_terminal_preview_lines_use_last_non_empty_rows() {
 fn terminal_pane_terminal_id_normalizes_existing_runtime_id() {
     let base = TerminalLaunchContext {
         root_project_id: "project-1".to_string(),
+        root_project_path: PathBuf::from("/workspace/codux"),
         project_id: "project-1".to_string(),
         project_name: "Codux".to_string(),
         project_path: PathBuf::from("/workspace/codux"),
@@ -315,6 +316,7 @@ fn terminal_pane_terminal_id_normalizes_existing_runtime_id() {
         memory_prompt_file: None,
         memory_index_file: None,
         runtime_target: Default::default(),
+        environment_variables: Default::default(),
     };
 
     let pane = TerminalPanePlan {
@@ -342,6 +344,7 @@ fn terminal_pane_terminal_id_rejects_foreign_owner_id() {
     // project instead; an id already owned by this project is kept as-is.
     let base = TerminalLaunchContext {
         root_project_id: "project-1".to_string(),
+        root_project_path: PathBuf::from("/workspace/codux"),
         project_id: "project-B".to_string(),
         project_name: "Codux".to_string(),
         project_path: PathBuf::from("/workspace/codux"),
@@ -358,6 +361,7 @@ fn terminal_pane_terminal_id_rejects_foreign_owner_id() {
         memory_prompt_file: None,
         memory_index_file: None,
         runtime_target: Default::default(),
+        environment_variables: Default::default(),
     };
 
     let foreign = TerminalPanePlan {
@@ -732,6 +736,7 @@ fn ai_session_fork_command_reads_prompt_file_for_all_targets() {
     assert!(ai_session_fork_command(AISessionForkTarget::Codex, path).starts_with("codex "));
     assert!(ai_session_fork_command(AISessionForkTarget::Claude, path).starts_with("claude "));
     assert!(ai_session_fork_command(AISessionForkTarget::Agy, path).starts_with("agy "));
+    assert!(ai_session_fork_command(AISessionForkTarget::Omp, path).starts_with("omp "));
     assert!(
         ai_session_fork_command(AISessionForkTarget::OpenCode, path).starts_with("opencode run ")
     );

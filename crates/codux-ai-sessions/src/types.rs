@@ -244,6 +244,7 @@ pub enum AISessionForkTarget {
     Codex,
     Claude,
     Agy,
+    Omp,
     OpenCode,
     Kiro,
     CodeWhale,
@@ -257,11 +258,26 @@ impl AISessionForkTarget {
             Self::Codex => "Codex",
             Self::Claude => "Claude",
             Self::Agy => "Agy",
+            Self::Omp => "Oh My Pi",
             Self::OpenCode => "OpenCode",
             Self::Kiro => "Kiro",
             Self::CodeWhale => "CodeWhale",
             Self::Kimi => "Kimi Code",
             Self::MiMo => "MiMo-Code",
+        }
+    }
+
+    pub fn tool_id(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Agy => "agy",
+            Self::Omp => "omp",
+            Self::OpenCode => "opencode",
+            Self::Kiro => "kiro",
+            Self::CodeWhale => "codewhale",
+            Self::Kimi => "kimi",
+            Self::MiMo => "mimo",
         }
     }
 }

@@ -15,7 +15,10 @@ fn parse_kiro_history_file(project: &AIHistoryProjectRequest, file_path: &Path) 
     let model = kiro_model(&value);
     let session_title = kiro_session_title(&value).or_else(|| Some(project.name.clone()));
     let timestamps = kiro_history_timestamps(&value);
-    let last_timestamp = timestamps.last().copied().unwrap_or_else(now_seconds);
+    let last_timestamp = timestamps
+        .last()
+        .copied()
+        .unwrap_or(0.0);
     let mut result = ParsedHistory::default();
     let mut last_kind = None;
     for timestamp in &timestamps {
@@ -100,7 +103,7 @@ fn parse_agy_database_history_file(
                 .last_seen_at
                 .or(conversation.last_model_at)
                 .or(conversation.last_user_at)
-                .unwrap_or_else(now_seconds),
+                .unwrap_or(0.0),
             model: conversation.model,
             input_tokens: conversation.input_tokens,
             output_tokens: conversation.output_tokens,
@@ -117,27 +120,31 @@ fn parse_kimi_history_file(project: &AIHistoryProjectRequest, file_path: &Path) 
         return ParsedHistory::default();
     };
     let state = read_small_json_value(&state_path).unwrap_or(Value::Null);
-    let Some(project_path) = kimi_project_path(&state) else {
-        return ParsedHistory::default();
-    };
-    if !paths_equivalent(Some(&project_path), &project.path) {
-        return ParsedHistory::default();
-    }
-
     let session_id = kimi_session_id(&state, file_path);
     let mut result = ParsedHistory::default();
     let mut session_title = kimi_session_title(&state);
     let mut session_model = kimi_model(&state);
     let mut last_timestamp = None;
     let mut last_usage: Option<HistoryUsage> = None;
+    let mut has_turn_usage = false;
 
     let _ = for_each_jsonl_line(file_path, 0, |line, _| {
         let Ok(row) = serde_json::from_str::<Value>(line) else {
             return true;
         };
-        let timestamp = kimi_timestamp(&row).unwrap_or_else(now_seconds);
-        last_timestamp = Some(timestamp);
-        if let Some(kind) = kimi_event_kind(&row) {
+        let source_timestamp = kimi_timestamp(&row);
+        let event_kind = kimi_event_kind(&row);
+        let turn_usage = kimi_turn_usage(&row);
+        let cumulative_usage = turn_usage.is_none().then(|| kimi_usage(&row)).flatten();
+        let semantic_row = event_kind.is_some() || turn_usage.is_some() || cumulative_usage.is_some();
+        let timestamp = source_timestamp
+            .or(last_timestamp)
+            .or_else(|| kimi_timestamp(&state))
+            .unwrap_or(0.0);
+        if semantic_row {
+            last_timestamp = Some(timestamp);
+        }
+        if let Some(kind) = event_kind {
             result.events.push(HistoryEvent {
                 source: "kimi".to_string(),
                 session_id: session_id.clone(),
@@ -151,13 +158,30 @@ fn parse_kimi_history_file(project: &AIHistoryProjectRequest, file_path: &Path) 
         if let Some(model) = kimi_model(&row) {
             session_model = Some(model);
         }
-        if let Some(usage) = kimi_usage(&row) {
+        if let Some(usage) = turn_usage {
+            has_turn_usage = true;
+            result.entries.push(HistoryEntry {
+                source: "kimi".to_string(),
+                session_id: session_id.clone(),
+                external_session_id: Some(session_id.clone()),
+                session_title: session_title.clone().or_else(|| Some(project.name.clone())),
+                timestamp,
+                model: kimi_model(&row).or_else(|| session_model.clone()),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+                reasoning_output_tokens: usage.reasoning_output_tokens,
+                usage_amounts: Vec::new(),
+            });
+        } else if let Some(usage) = cumulative_usage {
             last_usage = Some(usage);
         }
         true
     });
 
-    let usage = last_usage.or_else(|| kimi_usage(&state));
+    let usage = (!has_turn_usage)
+        .then(|| last_usage.or_else(|| kimi_usage(&state)))
+        .flatten();
     if let Some(usage) = usage
         && (usage.total_tokens() > 0 || usage.cached_input_tokens > 0)
     {
@@ -168,7 +192,7 @@ fn parse_kimi_history_file(project: &AIHistoryProjectRequest, file_path: &Path) 
             session_title: session_title.or_else(|| Some(project.name.clone())),
             timestamp: last_timestamp
                 .or_else(|| kimi_timestamp(&state))
-                .unwrap_or_else(now_seconds),
+                .unwrap_or(0.0),
             model: session_model,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -189,9 +213,7 @@ fn kimi_session_id(state: &Value, file_path: &Path) -> String {
         .and_then(|value| value.as_str())
         .and_then(normalized_string)
         .or_else(|| {
-            file_path
-                .parent()
-                .and_then(|path| path.parent())
+            kimi_session_dir_for_wire(file_path)
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .and_then(normalized_string)
@@ -224,7 +246,9 @@ fn kimi_project_path(value: &Value) -> Option<String> {
 
 fn kimi_model(value: &Value) -> Option<String> {
     value
-        .get("model")
+        .get("modelAlias")
+        .or_else(|| value.get("model_alias"))
+        .or_else(|| value.get("model"))
         .or_else(|| value.get("modelName"))
         .or_else(|| value.get("model_name"))
         .and_then(|value| value.as_str())
@@ -269,13 +293,20 @@ fn kimi_event_kind(value: &Value) -> Option<HistoryEventKind> {
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if role.contains("user") || role == "human" {
+    if role.contains("user") || role == "human" || role == "turn.prompt" {
         Some(HistoryEventKind::Request)
     } else if role.contains("assistant") || role.contains("agent") || role.contains("model") {
         Some(HistoryEventKind::Activity)
     } else {
         None
     }
+}
+
+fn kimi_turn_usage(value: &Value) -> Option<HistoryUsage> {
+    let is_turn_record = value.get("type").and_then(|value| value.as_str())
+        == Some("usage.record")
+        && value.get("usageScope").and_then(|value| value.as_str()) == Some("turn");
+    is_turn_record.then(|| kimi_usage(value)).flatten()
 }
 
 fn kimi_usage(value: &Value) -> Option<HistoryUsage> {
@@ -289,6 +320,21 @@ fn kimi_usage(value: &Value) -> Option<HistoryUsage> {
                 .get("message")
                 .and_then(|message| message.get("usage"))
         })?;
+    if usage.get("inputOther").is_some()
+        || usage.get("inputCacheRead").is_some()
+        || usage.get("inputCacheCreation").is_some()
+    {
+        let resolved = HistoryUsage {
+            input_tokens: json_i64(usage.get("inputOther")).max(0),
+            output_tokens: json_i64(usage.get("output")).max(0),
+            cached_input_tokens: json_i64(usage.get("inputCacheRead"))
+                .saturating_add(json_i64(usage.get("inputCacheCreation")))
+                .max(0),
+            reasoning_output_tokens: 0,
+        };
+        return (resolved.total_tokens() > 0 || resolved.cached_input_tokens > 0)
+            .then_some(resolved);
+    }
     let cached = json_i64(
         usage
             .get("cached_input_tokens")
@@ -338,6 +384,7 @@ fn kimi_text(value: &Value) -> Option<String> {
     value
         .get("content")
         .or_else(|| value.get("text"))
+        .or_else(|| value.get("input"))
         .or_else(|| {
             value
                 .get("message")

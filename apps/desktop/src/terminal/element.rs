@@ -879,6 +879,32 @@ enum TerminalMouseInteraction {
     Link,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalRightClickAction {
+    ContextMenu,
+    Paste,
+    ReportMouse,
+    Ignore,
+}
+
+/// Resolves the gesture before any clipboard work so remote ownership and TUI mouse mode win.
+fn terminal_right_click_action(
+    right_click_paste: bool,
+    shift_pressed: bool,
+    reports_mouse: bool,
+    local_viewport_owns: bool,
+) -> TerminalRightClickAction {
+    if !local_viewport_owns {
+        TerminalRightClickAction::Ignore
+    } else if reports_mouse {
+        TerminalRightClickAction::ReportMouse
+    } else if right_click_paste && !shift_pressed {
+        TerminalRightClickAction::Paste
+    } else {
+        TerminalRightClickAction::ContextMenu
+    }
+}
+
 fn should_schedule_selection_copy(
     copy_on_select: bool,
     interaction: TerminalMouseInteraction,

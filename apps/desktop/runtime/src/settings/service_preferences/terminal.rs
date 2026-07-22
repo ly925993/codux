@@ -56,6 +56,35 @@ impl SettingsService {
         Ok(summary_from_raw(&raw))
     }
 
+    pub fn toggle_terminal_right_click_paste(&self) -> Result<SettingsSummary, String> {
+        self.toggle_terminal_boolean("terminalRightClickPaste", false)
+    }
+
+    pub fn toggle_terminal_trim_trailing_whitespace_on_copy(
+        &self,
+    ) -> Result<SettingsSummary, String> {
+        self.toggle_terminal_boolean("terminalTrimTrailingWhitespaceOnCopy", false)
+    }
+
+    pub fn toggle_terminal_trim_trailing_whitespace_on_paste(
+        &self,
+    ) -> Result<SettingsSummary, String> {
+        self.toggle_terminal_boolean("terminalTrimTrailingWhitespaceOnPaste", false)
+    }
+
+    /// Keeps opt-in terminal booleans consistent and preserves unknown settings keys.
+    fn toggle_terminal_boolean(
+        &self,
+        key: &str,
+        default: bool,
+    ) -> Result<SettingsSummary, String> {
+        let mut raw = self.raw_settings();
+        let current = raw.get(key).and_then(Value::as_bool).unwrap_or(default);
+        raw.insert(key.to_string(), Value::Bool(!current));
+        self.save_raw_settings(&raw)?;
+        Ok(summary_from_raw(&raw))
+    }
+
     pub fn set_terminal_scrollback_value(&self, lines: &str) -> Result<SettingsSummary, String> {
         let lines = numeric_string(lines, 2000, 200, 10_000).to_string();
         self.update_string("terminalScrollbackLines", lines)

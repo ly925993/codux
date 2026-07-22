@@ -1203,6 +1203,9 @@ pub(in crate::app) fn terminal_config_for_settings(
         .unwrap_or(config.scrollback)
         .clamp(200, 10_000);
     config.copy_on_select = settings.terminal_copy_on_select;
+    config.right_click_paste = settings.terminal_right_click_paste;
+    config.trim_trailing_whitespace_on_copy = settings.terminal_trim_trailing_whitespace_on_copy;
+    config.trim_trailing_whitespace_on_paste = settings.terminal_trim_trailing_whitespace_on_paste;
     config.paste_images_as_paths = settings.terminal_paste_images_as_paths;
     config.colors = terminal_color_palette(&settings.theme, &settings.theme_color, appearance);
     let shell = settings.terminal_shell.trim();

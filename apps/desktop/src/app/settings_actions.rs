@@ -176,12 +176,8 @@ impl CoduxApp {
             move |service| service.toggle_terminal_copy_on_select(),
             |app, settings, cx| {
                 app.apply_async_settings_summary(settings);
-                app.apply_terminal_copy_on_select_setting(cx);
-                if let Some(parent) = app.parent_main_window.clone() {
-                    let _ = parent.update(cx, |main, cx| {
-                        main.apply_settings_update_event(cx);
-                    });
-                }
+                app.apply_terminal_behavior_settings(cx);
+                app.propagate_terminal_behavior_settings_to_parent(cx);
                 app.invalidate_ui_region(cx, UiRegion::Root);
             },
             cx,
@@ -189,11 +185,81 @@ impl CoduxApp {
         self.invalidate_ui_region(cx, UiRegion::Root);
     }
 
-    fn apply_terminal_copy_on_select_setting(&self, cx: &mut Context<Self>) {
-        let enabled = self.state.settings.terminal_copy_on_select;
+    pub(super) fn toggle_terminal_right_click_paste(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_terminal_right_click_paste",
+            "saving terminal right-click paste setting",
+            move |service| service.toggle_terminal_right_click_paste(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                app.apply_terminal_behavior_settings(cx);
+                app.propagate_terminal_behavior_settings_to_parent(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    pub(super) fn toggle_terminal_trim_trailing_whitespace_on_copy(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_terminal_trim_trailing_whitespace_on_copy",
+            "saving terminal copy whitespace setting",
+            move |service| service.toggle_terminal_trim_trailing_whitespace_on_copy(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                app.apply_terminal_behavior_settings(cx);
+                app.propagate_terminal_behavior_settings_to_parent(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    pub(super) fn toggle_terminal_trim_trailing_whitespace_on_paste(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_terminal_trim_trailing_whitespace_on_paste",
+            "saving terminal paste whitespace setting",
+            move |service| service.toggle_terminal_trim_trailing_whitespace_on_paste(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                app.apply_terminal_behavior_settings(cx);
+                app.propagate_terminal_behavior_settings_to_parent(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    /// Applies input and clipboard preferences without rebuilding terminal renderer caches.
+    fn apply_terminal_behavior_settings(&self, cx: &mut Context<Self>) {
+        let config = self.terminal_config_from_settings();
         for view in self.existing_terminal_views() {
             view.update(cx, |terminal, _| {
-                terminal.update_copy_on_select(enabled);
+                terminal.update_behavior_settings(&config);
+            });
+        }
+    }
+
+    /// Settings windows mirror behavior changes into the main window's existing terminals.
+    fn propagate_terminal_behavior_settings_to_parent(&self, cx: &mut Context<Self>) {
+        if let Some(parent) = self.parent_main_window.clone() {
+            let _ = parent.update(cx, |main, cx| {
+                main.apply_settings_update_event(cx);
             });
         }
     }
@@ -247,10 +313,9 @@ impl CoduxApp {
         if event.statistics_revision == event.revision {
             self.apply_settings_summary_local(settings);
             if self.window_mode == AppWindowMode::Main
-                && previous_settings.terminal_copy_on_select
-                    != self.state.settings.terminal_copy_on_select
+                && terminal_behavior_settings_changed(&previous_settings, &self.state.settings)
             {
-                self.apply_terminal_copy_on_select_setting(cx);
+                self.apply_terminal_behavior_settings(cx);
             }
             self.status_message = "AI statistics mode updated".to_string();
             if self.window_mode == AppWindowMode::Main {
@@ -280,10 +345,8 @@ impl CoduxApp {
         if self.window_mode == AppWindowMode::Main {
             if terminal_config_except_copy_changed(&previous_settings, &self.state.settings) {
                 self.apply_terminal_text_settings(cx);
-            } else if previous_settings.terminal_copy_on_select
-                != self.state.settings.terminal_copy_on_select
-            {
-                self.apply_terminal_copy_on_select_setting(cx);
+            } else if terminal_behavior_settings_changed(&previous_settings, &self.state.settings) {
+                self.apply_terminal_behavior_settings(cx);
             }
             self.sync_desktop_pet_window(false, cx);
         }
@@ -1917,4 +1980,16 @@ pub(in crate::app) fn terminal_config_except_copy_changed(
         || previous.terminal_scrollback_lines != current.terminal_scrollback_lines
         || previous.terminal_paste_images_as_paths != current.terminal_paste_images_as_paths
         || previous.terminal_shell != current.terminal_shell
+}
+
+pub(in crate::app) fn terminal_behavior_settings_changed(
+    previous: &SettingsSummary,
+    current: &SettingsSummary,
+) -> bool {
+    previous.terminal_copy_on_select != current.terminal_copy_on_select
+        || previous.terminal_right_click_paste != current.terminal_right_click_paste
+        || previous.terminal_trim_trailing_whitespace_on_copy
+            != current.terminal_trim_trailing_whitespace_on_copy
+        || previous.terminal_trim_trailing_whitespace_on_paste
+            != current.terminal_trim_trailing_whitespace_on_paste
 }

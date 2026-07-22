@@ -96,6 +96,46 @@ fn wrapped_and_hard_lines_copy_with_only_real_newline() {
         "abcdefghijklmno\nsecond"
     );
 }
+
+#[test]
+fn copy_trim_removes_whitespace_only_at_hard_line_endings() {
+    let rows = vec![
+        ("first  ".to_string(), false),
+        ("soft ".to_string(), true),
+        ("wrap\t".to_string(), false),
+        ("last\t ".to_string(), false),
+    ];
+
+    assert_eq!(
+        assemble_selected_rows(rows.clone(), false),
+        "first  \nsoft wrap\t\nlast\t "
+    );
+    assert_eq!(assemble_selected_rows(rows, true), "first\nsoft wrap\nlast");
+}
+
+#[test]
+fn right_click_action_preserves_menu_mouse_reporting_and_remote_ownership() {
+    assert_eq!(
+        terminal_right_click_action(false, false, false, true),
+        TerminalRightClickAction::ContextMenu
+    );
+    assert_eq!(
+        terminal_right_click_action(true, false, false, true),
+        TerminalRightClickAction::Paste
+    );
+    assert_eq!(
+        terminal_right_click_action(true, true, false, true),
+        TerminalRightClickAction::ContextMenu
+    );
+    assert_eq!(
+        terminal_right_click_action(true, false, true, true),
+        TerminalRightClickAction::ReportMouse
+    );
+    assert_eq!(
+        terminal_right_click_action(true, false, false, false),
+        TerminalRightClickAction::Ignore
+    );
+}
 #[test]
 fn double_click_selects_word_under_cell() {
     let mut state = TerminalModel::new_for_test(20, 4, 100);

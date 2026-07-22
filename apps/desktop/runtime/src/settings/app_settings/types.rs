@@ -50,6 +50,15 @@ pub struct AppSettings {
     /// Opt-in because automatic copying replaces the user's current clipboard contents.
     #[serde(default)]
     pub terminal_copy_on_select: bool,
+    /// Opt-in because it replaces the standard right-click context-menu gesture.
+    #[serde(default)]
+    pub terminal_right_click_paste: bool,
+    /// Removes spaces and tabs only at hard line endings in copied terminal selections.
+    #[serde(default)]
+    pub terminal_trim_trailing_whitespace_on_copy: bool,
+    /// Removes spaces and tabs at line endings from plain-text clipboard pastes.
+    #[serde(default)]
+    pub terminal_trim_trailing_whitespace_on_paste: bool,
     #[serde(default = "default_terminal_paste_images_as_paths")]
     pub terminal_paste_images_as_paths: bool,
     #[serde(default = "default_icon_style")]

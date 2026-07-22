@@ -97,6 +97,26 @@ impl RuntimeService {
         self.update_settings_with_side_effects(|settings| settings.toggle_terminal_copy_on_select())
     }
 
+    pub fn toggle_terminal_right_click_paste(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| settings.toggle_terminal_right_click_paste())
+    }
+
+    pub fn toggle_terminal_trim_trailing_whitespace_on_copy(
+        &self,
+    ) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| {
+            settings.toggle_terminal_trim_trailing_whitespace_on_copy()
+        })
+    }
+
+    pub fn toggle_terminal_trim_trailing_whitespace_on_paste(
+        &self,
+    ) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| {
+            settings.toggle_terminal_trim_trailing_whitespace_on_paste()
+        })
+    }
+
     pub fn cycle_terminal_font_size(&self) -> Result<SettingsSummary, String> {
         self.update_settings_with_side_effects(|settings| settings.cycle_terminal_font_size())
     }

@@ -115,27 +115,52 @@ fn terminal_clipboard_image_payload_detection_filters_data_and_html() {
 #[test]
 fn terminal_clipboard_plain_text_skips_rich_format_reading() {
     assert_eq!(
-        terminal_clipboard_text_preference(Some("echo ready".to_string()), true),
+        terminal_clipboard_text_preference(Some("echo ready".to_string()), true, false),
         TerminalClipboardTextPreference::Text("echo ready".to_string())
     );
     assert_eq!(
-        terminal_clipboard_text_preference(Some("echo ready".to_string()), false),
+        terminal_clipboard_text_preference(Some("echo ready".to_string()), false, false),
         TerminalClipboardTextPreference::Text("echo ready".to_string())
     );
 }
 #[test]
 fn terminal_clipboard_image_payload_uses_rich_format_reading() {
     assert_eq!(
-        terminal_clipboard_text_preference(Some("data:image/png;base64,abc".to_string()), true),
+        terminal_clipboard_text_preference(
+            Some("data:image/png;base64,abc".to_string()),
+            true,
+            false,
+        ),
         TerminalClipboardTextPreference::RichClipboard
     );
     assert_eq!(
-        terminal_clipboard_text_preference(None, true),
+        terminal_clipboard_text_preference(None, true, false),
         TerminalClipboardTextPreference::RichClipboard
     );
     assert_eq!(
-        terminal_clipboard_text_preference(None, false),
+        terminal_clipboard_text_preference(None, false, false),
         TerminalClipboardTextPreference::None
+    );
+}
+
+#[test]
+fn terminal_plain_text_paste_trims_line_endings_without_changing_newlines() {
+    let text = "alpha  \r\nbeta\t \ngamma \rdelta\t ".to_string();
+    assert_eq!(
+        trim_terminal_paste_trailing_whitespace(text),
+        "alpha\r\nbeta\ngamma\rdelta"
+    );
+}
+
+#[test]
+fn terminal_plain_text_paste_trim_switch_preserves_original_when_disabled() {
+    assert_eq!(
+        terminal_clipboard_text_preference(Some("echo ready  ".to_string()), false, false),
+        TerminalClipboardTextPreference::Text("echo ready  ".to_string())
+    );
+    assert_eq!(
+        terminal_clipboard_text_preference(Some("echo ready  ".to_string()), false, true),
+        TerminalClipboardTextPreference::Text("echo ready".to_string())
     );
 }
 #[test]

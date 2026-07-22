@@ -12,7 +12,43 @@ mod tests {
         let summary = SettingsService::new(support_dir).summary();
         assert_eq!(summary.terminal_scrollback_lines, "2000");
         assert!(!summary.terminal_copy_on_select);
+        assert!(!summary.terminal_right_click_paste);
+        assert!(!summary.terminal_trim_trailing_whitespace_on_copy);
+        assert!(!summary.terminal_trim_trailing_whitespace_on_paste);
         assert!(summary.wsl_enabled);
+    }
+
+    #[test]
+    fn terminal_clipboard_behavior_switches_are_opt_in_and_persist() {
+        let support_dir = temp_dir("settings-terminal-clipboard-behavior");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        assert!(
+            service
+                .toggle_terminal_right_click_paste()
+                .expect("enable right-click paste")
+                .terminal_right_click_paste
+        );
+        assert!(
+            service
+                .toggle_terminal_trim_trailing_whitespace_on_copy()
+                .expect("enable copy whitespace trimming")
+                .terminal_trim_trailing_whitespace_on_copy
+        );
+        assert!(
+            service
+                .toggle_terminal_trim_trailing_whitespace_on_paste()
+                .expect("enable paste whitespace trimming")
+                .terminal_trim_trailing_whitespace_on_paste
+        );
+
+        crate::config::flush_all_config_writes();
+        let persisted = SettingsService::new(support_dir.clone()).summary();
+        assert!(persisted.terminal_right_click_paste);
+        assert!(persisted.terminal_trim_trailing_whitespace_on_copy);
+        assert!(persisted.terminal_trim_trailing_whitespace_on_paste);
+
+        fs::remove_dir_all(support_dir).ok();
     }
 
     #[test]
@@ -143,6 +179,9 @@ mod tests {
             AppSettings::default().terminal_font_size
         );
         assert!(!store.snapshot().terminal_copy_on_select);
+        assert!(!store.snapshot().terminal_right_click_paste);
+        assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_copy);
+        assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_paste);
         crate::config::flush_all_config_writes();
 
         let saved = fs::read_to_string(settings_path).expect("saved settings");

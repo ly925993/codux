@@ -10,6 +10,12 @@ pub struct TerminalConfig {
     pub colors: ColorPalette,
     /// Copies completed mouse selections without affecting explicit copy shortcuts.
     pub copy_on_select: bool,
+    /// Pastes on an unmodified right click; Shift+right-click remains the menu gesture.
+    pub right_click_paste: bool,
+    /// Removes spaces and tabs at hard line endings when copying a selection.
+    pub trim_trailing_whitespace_on_copy: bool,
+    /// Removes spaces and tabs at line endings from plain-text clipboard pastes.
+    pub trim_trailing_whitespace_on_paste: bool,
     pub paste_images_as_paths: bool,
     /// Resolved i18n locale (e.g. "en", "zh-Hans") for in-terminal UI like the
     /// handoff placeholder. Empty = fall back to the provided default string.
@@ -51,6 +57,9 @@ pub fn terminal_config() -> TerminalConfig {
         padding: Edges::all(px(10.0)),
         colors,
         copy_on_select: false,
+        right_click_paste: false,
+        trim_trailing_whitespace_on_copy: false,
+        trim_trailing_whitespace_on_paste: false,
         paste_images_as_paths: true,
         language: String::new(),
         shell: None,

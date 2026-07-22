@@ -17,6 +17,12 @@ pub struct SettingsSummary {
     pub terminal_scrollback_lines: String,
     /// Copies a completed mouse selection once, after the selection event finishes.
     pub terminal_copy_on_select: bool,
+    /// Uses an unmodified right click for paste while Shift+right-click keeps the menu available.
+    pub terminal_right_click_paste: bool,
+    /// Removes spaces and tabs at hard line endings when copying a terminal selection.
+    pub terminal_trim_trailing_whitespace_on_copy: bool,
+    /// Removes spaces and tabs at line endings when pasting plain clipboard text.
+    pub terminal_trim_trailing_whitespace_on_paste: bool,
     pub terminal_paste_images_as_paths: bool,
     /// Absolute path of the preferred terminal shell; empty = platform default.
     pub terminal_shell: String,

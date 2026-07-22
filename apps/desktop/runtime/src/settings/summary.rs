@@ -65,6 +65,18 @@ fn summary_from_raw(raw: &Map<String, Value>) -> SettingsSummary {
             .get("terminalCopyOnSelect")
             .and_then(Value::as_bool)
             .unwrap_or(defaults.terminal_copy_on_select),
+        terminal_right_click_paste: raw
+            .get("terminalRightClickPaste")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.terminal_right_click_paste),
+        terminal_trim_trailing_whitespace_on_copy: raw
+            .get("terminalTrimTrailingWhitespaceOnCopy")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.terminal_trim_trailing_whitespace_on_copy),
+        terminal_trim_trailing_whitespace_on_paste: raw
+            .get("terminalTrimTrailingWhitespaceOnPaste")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.terminal_trim_trailing_whitespace_on_paste),
         terminal_paste_images_as_paths: raw
             .get("terminalPasteImagesAsPaths")
             .and_then(Value::as_bool)

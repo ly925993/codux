@@ -211,7 +211,7 @@ fn terminal_context_menu(
             return menu;
         }
     }
-    let has_selection = view.read(cx).selected_text(cx).is_some();
+    let has_selection = view.read(cx).has_selection(cx);
     let translate =
         |key: &str, default: &str| codux_runtime::i18n::translate(language, key, default);
     let copy_view = view.clone();

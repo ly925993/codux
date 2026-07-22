@@ -336,12 +336,24 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub fn update_copy_on_select(&mut self, copy_on_select: bool) {
-        if self.config.copy_on_select == copy_on_select {
+    pub fn update_behavior_settings(&mut self, config: &TerminalConfig) {
+        let copy_behavior_changed = self.config.copy_on_select != config.copy_on_select
+            || self.config.trim_trailing_whitespace_on_copy
+                != config.trim_trailing_whitespace_on_copy;
+        if !copy_behavior_changed
+            && self.config.right_click_paste == config.right_click_paste
+            && self.config.trim_trailing_whitespace_on_paste
+                == config.trim_trailing_whitespace_on_paste
+        {
             return;
         }
-        self.invalidate_pending_selection_copy();
-        self.config.copy_on_select = copy_on_select;
+        if copy_behavior_changed {
+            self.invalidate_pending_selection_copy();
+        }
+        self.config.copy_on_select = config.copy_on_select;
+        self.config.right_click_paste = config.right_click_paste;
+        self.config.trim_trailing_whitespace_on_copy = config.trim_trailing_whitespace_on_copy;
+        self.config.trim_trailing_whitespace_on_paste = config.trim_trailing_whitespace_on_paste;
     }
 
     pub fn set_focus_observer<F>(&mut self, observer: F)
@@ -756,9 +768,33 @@ impl TerminalView {
         }
 
         if event.button == MouseButton::Right {
-            // The context menu element opens on this same event; keep it closed
-            // when the click is forwarded to a mouse-reporting app instead.
-            self.context_menu_suppressed = self.should_report_mouse(event.modifiers.shift, cx);
+            let action = terminal_right_click_action(
+                self.config.right_click_paste,
+                event.modifiers.shift,
+                self.should_report_mouse(event.modifiers.shift, cx),
+                self.session.local_viewport_owns(),
+            );
+            // The wrapping element opens its menu from this event, so every other action
+            // explicitly suppresses that menu before handling the click.
+            self.context_menu_suppressed = action != TerminalRightClickAction::ContextMenu;
+            match action {
+                TerminalRightClickAction::Paste => {
+                    if let Some(text) = self.terminal_clipboard_paste_text(cx) {
+                        self.suppress_text_input_echo(&text);
+                        self.paste_text(&text, cx);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                TerminalRightClickAction::Ignore => {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                TerminalRightClickAction::ReportMouse
+                | TerminalRightClickAction::ContextMenu => {}
+            }
         }
 
         if self.should_report_mouse(event.modifiers.shift, cx) {
@@ -1181,7 +1217,11 @@ impl TerminalView {
     }
 
     fn terminal_clipboard_paste_text(&self, cx: &mut App) -> Option<String> {
-        terminal_clipboard_paste_text(cx, self.config.paste_images_as_paths)
+        terminal_clipboard_paste_text(
+            cx,
+            self.config.paste_images_as_paths,
+            self.config.trim_trailing_whitespace_on_paste,
+        )
     }
 
     fn clear_pending_view_scroll(&mut self) {
@@ -1235,9 +1275,8 @@ impl TerminalView {
         self.layout.lock().model_cell_at(position)
     }
 
-    fn selected_text(&self, cx: &App) -> Option<String> {
-        let text = self.model.read(cx).selected_text()?;
-        (!text.is_empty()).then_some(text)
+    fn has_selection(&self, cx: &App) -> bool {
+        self.model.read(cx).selection_range().is_some()
     }
 
     fn selection_point_from_cell(
@@ -1249,12 +1288,35 @@ impl TerminalView {
         selection_point_from_cell(point, &content)
     }
 
-    fn copy_selected_text(&self, cx: &mut App) -> bool {
-        let Some(text) = self.selected_text(cx) else {
+    fn copy_selected_text(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(range) = self.model.read(cx).selection_range() else {
             return false;
         };
-        TERMINAL_CLIPBOARD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        let global_sequence = TERMINAL_CLIPBOARD_SEQUENCE
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let handle = self.model.read(cx).handle.clone();
+        let trim_trailing_whitespace = self.config.trim_trailing_whitespace_on_copy;
+        let extractor = cx.background_executor().clone();
+
+        // Explicit copies freeze the current range and extract it off the UI thread, just like
+        // copy-on-select, so opening the menu or copying deep scrollback remains responsive.
+        cx.spawn(async move |terminal: WeakEntity<Self>, cx| {
+            let text = extractor
+                .spawn(async move {
+                    handle.selected_text_for_range_with_options(range, trim_trailing_whitespace)
+                })
+                .await;
+            if text.is_empty() {
+                return;
+            }
+            let _ = terminal.update(cx, |_terminal, cx| {
+                if TERMINAL_CLIPBOARD_SEQUENCE.load(Ordering::Relaxed) == global_sequence {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            });
+        })
+        .detach();
         true
     }
 
@@ -1274,6 +1336,7 @@ impl TerminalView {
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
         let delay = selection_copy_delay(click_count);
+        let trim_trailing_whitespace = self.config.trim_trailing_whitespace_on_copy;
         let timer = cx.background_executor().clone();
         let extractor = timer.clone();
 
@@ -1294,7 +1357,9 @@ impl TerminalView {
             // Building text across scrollback can be linear in selection size,
             // so keep that work off the UI thread and only hand off the result.
             let text = extractor
-                .spawn(async move { handle.selected_text_for_range(range) })
+                .spawn(async move {
+                    handle.selected_text_for_range_with_options(range, trim_trailing_whitespace)
+                })
                 .await;
             if text.is_empty() {
                 return;

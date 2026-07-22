@@ -420,7 +420,7 @@ impl TerminalModel {
         self.handle.screen.lock().process(bytes);
         if let Some((range, text)) = before_selection {
             let content = self.live_snapshot();
-            if selected_text_from_content(&content, range) != text
+            if selected_text_from_content(&content, range, false) != text
                 && let Some(next_range) = find_selection_text_range(&content, &text)
             {
                 self.selection.set_range(next_range);
@@ -984,6 +984,7 @@ impl TerminalModel {
         Some(range)
     }
 
+    #[cfg(test)]
     fn selected_text(&self) -> Option<String> {
         self.selection_range()
             .map(|range| self.handle.selected_text_for_range(range))
@@ -1221,11 +1222,19 @@ impl TerminalStateHandle {
     }
 
     fn selected_text_for_range(&self, range: SelectionRange) -> String {
+        self.selected_text_for_range_with_options(range, false)
+    }
+
+    fn selected_text_for_range_with_options(
+        &self,
+        range: SelectionRange,
+        trim_trailing_whitespace: bool,
+    ) -> String {
         let content = self.snapshot();
         if content_covers_selection_range(&content, range) {
-            selected_text_from_content(&content, range)
+            selected_text_from_content(&content, range, trim_trailing_whitespace)
         } else {
-            selected_text_from_screen_range(&self.screen, range)
+            selected_text_from_screen_range(&self.screen, range, trim_trailing_whitespace)
         }
     }
 }
@@ -1254,7 +1263,11 @@ fn trace_snapshot_publish_result(
     );
 }
 
-fn selected_text_from_content(content: &TerminalContent, range: SelectionRange) -> String {
+fn selected_text_from_content(
+    content: &TerminalContent,
+    range: SelectionRange,
+    trim_trailing_whitespace: bool,
+) -> String {
     let mut rows = Vec::new();
     for line in range.start.line..=range.end.line {
         let start_col = if line == range.start.line {
@@ -1272,17 +1285,22 @@ fn selected_text_from_content(content: &TerminalContent, range: SelectionRange) 
             content.is_wrapped_line(line),
         ));
     }
-    assemble_selected_rows(rows)
+    assemble_selected_rows(rows, trim_trailing_whitespace)
 }
 
 // Join selected rows, inserting a newline only at a hard line break. A
 // soft-wrapped row continues on the next without one, so a visually single
 // (wrapped) line copies as one line instead of gaining a stray newline.
-fn assemble_selected_rows(rows: Vec<(String, bool)>) -> String {
+fn assemble_selected_rows(rows: Vec<(String, bool)>, trim_trailing_whitespace: bool) -> String {
     let last = rows.len().saturating_sub(1);
     let mut out = String::new();
     for (index, (text, wrapped)) in rows.into_iter().enumerate() {
-        out.push_str(&text);
+        let hard_line_end = index == last || !wrapped;
+        if trim_trailing_whitespace && hard_line_end {
+            out.push_str(text.trim_end_matches([' ', '\t']));
+        } else {
+            out.push_str(&text);
+        }
         if index != last && !wrapped {
             out.push('\n');
         }
@@ -1293,6 +1311,7 @@ fn assemble_selected_rows(rows: Vec<(String, bool)>) -> String {
 fn selected_text_from_screen_range(
     screen: &Arc<Mutex<HeadlessTerminalScreen>>,
     range: SelectionRange,
+    trim_trailing_whitespace: bool,
 ) -> String {
     // The terminal worker captures every required viewport in one command.
     // Output cannot interleave between chunks, so a large copy never combines
@@ -1342,7 +1361,7 @@ fn selected_text_from_screen_range(
         }
         line = chunk_end.saturating_add(1);
     }
-    assemble_selected_rows(rows)
+    assemble_selected_rows(rows, trim_trailing_whitespace)
 }
 
 fn content_covers_selection_range(content: &TerminalContent, range: SelectionRange) -> bool {

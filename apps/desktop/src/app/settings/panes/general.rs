@@ -278,6 +278,67 @@ pub(super) fn settings_general_pane(
                 settings_row(
                     settings_text(
                         language,
+                        "settings.terminal_right_click_paste",
+                        "Right-click to Paste",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_right_click_paste.help",
+                        "Paste with an unmodified right click. Use Shift+right-click to open the context menu.",
+                    )),
+                    settings_toggle(
+                        "settings-terminal-right-click-paste",
+                        settings.terminal_right_click_paste,
+                        cx,
+                        |app, window, cx| app.toggle_terminal_right_click_paste(window, cx),
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
+                        "settings.terminal_trim_trailing_whitespace_on_copy",
+                        "Trim Trailing Whitespace on Copy",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_trim_trailing_whitespace_on_copy.help",
+                        "Remove spaces and tabs at hard line endings when copying a terminal selection.",
+                    )),
+                    settings_toggle(
+                        "settings-terminal-trim-trailing-whitespace-on-copy",
+                        settings.terminal_trim_trailing_whitespace_on_copy,
+                        cx,
+                        |app, window, cx| {
+                            app.toggle_terminal_trim_trailing_whitespace_on_copy(window, cx)
+                        },
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
+                        "settings.terminal_trim_trailing_whitespace_on_paste",
+                        "Trim Trailing Whitespace on Paste",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_trim_trailing_whitespace_on_paste.help",
+                        "Remove spaces and tabs at line endings from plain-text pastes. File paths are unchanged.",
+                    )),
+                    settings_toggle(
+                        "settings-terminal-trim-trailing-whitespace-on-paste",
+                        settings.terminal_trim_trailing_whitespace_on_paste,
+                        cx,
+                        |app, window, cx| {
+                            app.toggle_terminal_trim_trailing_whitespace_on_paste(window, cx)
+                        },
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
                         "settings.terminal_paste_images_as_paths",
                         "Paste Images as Paths",
                     ),

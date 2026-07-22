@@ -55,10 +55,18 @@ fn core_key_input(
     }
 }
 
-fn terminal_clipboard_paste_text(cx: &mut App, paste_images_as_paths: bool) -> Option<String> {
+fn terminal_clipboard_paste_text(
+    cx: &mut App,
+    paste_images_as_paths: bool,
+    trim_trailing_whitespace: bool,
+) -> Option<String> {
     #[cfg(target_os = "windows")]
     match windows_terminal_clipboard_text() {
-        Ok(text) => match terminal_clipboard_text_preference(text, paste_images_as_paths) {
+        Ok(text) => match terminal_clipboard_text_preference(
+            text,
+            paste_images_as_paths,
+            trim_trailing_whitespace,
+        ) {
             TerminalClipboardTextPreference::Text(text) => return Some(text),
             TerminalClipboardTextPreference::RichClipboard => {}
             TerminalClipboardTextPreference::None => return None,
@@ -72,7 +80,14 @@ fn terminal_clipboard_paste_text(cx: &mut App, paste_images_as_paths: bool) -> O
     }
     let text = item
         .text()
-        .filter(|text| !paste_images_as_paths || !clipboard_text_looks_like_image_payload(text));
+        .filter(|text| !paste_images_as_paths || !clipboard_text_looks_like_image_payload(text))
+        .map(|text| {
+            if trim_trailing_whitespace {
+                trim_terminal_paste_trailing_whitespace(text)
+            } else {
+                text
+            }
+        });
     if text.is_some() {
         return text;
     }
@@ -110,17 +125,59 @@ enum TerminalClipboardTextPreference {
 fn terminal_clipboard_text_preference(
     text: Option<String>,
     paste_images_as_paths: bool,
+    trim_trailing_whitespace: bool,
 ) -> TerminalClipboardTextPreference {
     match text {
         Some(text)
             if !paste_images_as_paths || !clipboard_text_looks_like_image_payload(&text) =>
         {
-            TerminalClipboardTextPreference::Text(text)
+            TerminalClipboardTextPreference::Text(if trim_trailing_whitespace {
+                trim_terminal_paste_trailing_whitespace(text)
+            } else {
+                text
+            })
         }
         Some(_) if paste_images_as_paths => TerminalClipboardTextPreference::RichClipboard,
         None if paste_images_as_paths => TerminalClipboardTextPreference::RichClipboard,
         _ => TerminalClipboardTextPreference::None,
     }
+}
+
+/// Compacts the owned UTF-8 buffer in place, preserving every line ending without another allocation.
+fn trim_terminal_paste_trailing_whitespace(text: String) -> String {
+    let mut bytes = text.into_bytes();
+    let mut read = 0;
+    let mut write = 0;
+
+    while read < bytes.len() {
+        let line_start = read;
+        while read < bytes.len() && !matches!(bytes[read], b'\r' | b'\n') {
+            read += 1;
+        }
+
+        let mut content_end = read;
+        while content_end > line_start && matches!(bytes[content_end - 1], b' ' | b'\t') {
+            content_end -= 1;
+        }
+        let content_len = content_end - line_start;
+        bytes.copy_within(line_start..content_end, write);
+        write += content_len;
+
+        if read < bytes.len() {
+            bytes[write] = bytes[read];
+            write += 1;
+            if bytes[read] == b'\r' && bytes.get(read + 1) == Some(&b'\n') {
+                bytes[write] = b'\n';
+                write += 1;
+                read += 1;
+            }
+            read += 1;
+        }
+    }
+
+    bytes.truncate(write);
+    // Removing only ASCII spaces and tabs cannot invalidate the original UTF-8 byte sequence.
+    unsafe { String::from_utf8_unchecked(bytes) }
 }
 
 fn clipboard_text_looks_like_image_payload(text: &str) -> bool {

@@ -7,7 +7,9 @@ use crate::{
             file_search_status_message, generated_git_commit_message, git_remote_action_label,
             project_badge_text_from_name, ssh_connect_command,
         },
-        settings_actions::terminal_config_except_copy_changed,
+        settings_actions::{
+            terminal_behavior_settings_changed, terminal_config_except_copy_changed,
+        },
         shortcuts::{normalized_shortcut_text, shortcut_matches},
         terminal_state::{
             TerminalSplitDirection, normalize_terminal_restore_state, structural_terminal_layout,
@@ -259,6 +261,14 @@ fn terminal_config_maps_copy_on_select_setting() {
         terminal_config_for_settings(&settings, WindowAppearance::Light).copy_on_select,
         "enabled setting reaches newly created terminal configs"
     );
+
+    settings.terminal_right_click_paste = true;
+    settings.terminal_trim_trailing_whitespace_on_copy = true;
+    settings.terminal_trim_trailing_whitespace_on_paste = true;
+    let config = terminal_config_for_settings(&settings, WindowAppearance::Light);
+    assert!(config.right_click_paste);
+    assert!(config.trim_trailing_whitespace_on_copy);
+    assert!(config.trim_trailing_whitespace_on_paste);
 }
 
 #[test]
@@ -267,6 +277,22 @@ fn copy_on_select_does_not_require_terminal_renderer_rebuild() {
     let mut current = previous.clone();
     current.terminal_copy_on_select = true;
     assert!(!terminal_config_except_copy_changed(&previous, &current));
+    assert!(terminal_behavior_settings_changed(&previous, &current));
+
+    current = previous.clone();
+    current.terminal_right_click_paste = true;
+    assert!(!terminal_config_except_copy_changed(&previous, &current));
+    assert!(terminal_behavior_settings_changed(&previous, &current));
+
+    current = previous.clone();
+    current.terminal_trim_trailing_whitespace_on_copy = true;
+    assert!(!terminal_config_except_copy_changed(&previous, &current));
+    assert!(terminal_behavior_settings_changed(&previous, &current));
+
+    current = previous.clone();
+    current.terminal_trim_trailing_whitespace_on_paste = true;
+    assert!(!terminal_config_except_copy_changed(&previous, &current));
+    assert!(terminal_behavior_settings_changed(&previous, &current));
 
     current.terminal_font_size = "16".to_string();
     assert!(terminal_config_except_copy_changed(&previous, &current));

@@ -7,10 +7,12 @@ use crate::{
             file_search_status_message, generated_git_commit_message, git_remote_action_label,
             project_badge_text_from_name, ssh_connect_command,
         },
+        settings_actions::terminal_config_except_copy_changed,
         shortcuts::{normalized_shortcut_text, shortcut_matches},
         terminal_state::{
             TerminalSplitDirection, normalize_terminal_restore_state, structural_terminal_layout,
-            terminal_pane_terminal_id, terminal_panes_are_foreign_to_owner, terminal_restore_plan,
+            terminal_config_for_settings, terminal_pane_terminal_id,
+            terminal_panes_are_foreign_to_owner, terminal_restore_plan,
             terminal_restore_plan_for_language, terminal_split_tree_insert_pane,
             terminal_split_tree_insert_pane_root, terminal_split_tree_remove_pane,
             terminal_split_tree_update_ratios,
@@ -26,6 +28,7 @@ use crate::{
 use codux_runtime::{
     ai_history::{AISessionForkTarget, AISessionSummary},
     git::GitSummary,
+    settings::SettingsSummary,
     ssh::SSHProfileSummary,
     terminal_layout::{
         SplitAxis, TerminalGridColumn, TerminalLayoutSummary, TerminalPaneSummary,
@@ -33,7 +36,7 @@ use codux_runtime::{
     },
     terminal_runtime::{TerminalRuntimeSessionSummary, TerminalRuntimeSummary},
 };
-use gpui::{Bounds, point, px, size};
+use gpui::{Bounds, WindowAppearance, point, px, size};
 use std::{collections::HashMap, path::PathBuf};
 
 fn terminal_focus_test_tabs() -> Vec<crate::app::types::TerminalTab> {
@@ -241,6 +244,32 @@ fn terminal_restore_state_rebuilds_invalid_layout_without_compat_fallback() {
     assert!(layout.tabs.is_empty());
     assert_eq!(layout.top_panes[0].title, "终端 1");
     assert_eq!(layout.active_terminal_id, "");
+}
+
+#[test]
+fn terminal_config_maps_copy_on_select_setting() {
+    let mut settings = SettingsSummary::default();
+    assert!(
+        !terminal_config_for_settings(&settings, WindowAppearance::Light).copy_on_select,
+        "copy on select remains opt-in"
+    );
+
+    settings.terminal_copy_on_select = true;
+    assert!(
+        terminal_config_for_settings(&settings, WindowAppearance::Light).copy_on_select,
+        "enabled setting reaches newly created terminal configs"
+    );
+}
+
+#[test]
+fn copy_on_select_does_not_require_terminal_renderer_rebuild() {
+    let previous = SettingsSummary::default();
+    let mut current = previous.clone();
+    current.terminal_copy_on_select = true;
+    assert!(!terminal_config_except_copy_changed(&previous, &current));
+
+    current.terminal_font_size = "16".to_string();
+    assert!(terminal_config_except_copy_changed(&previous, &current));
 }
 
 #[test]

@@ -259,6 +259,25 @@ pub(super) fn settings_general_pane(
                 settings_row(
                     settings_text(
                         language,
+                        "settings.terminal_copy_on_select",
+                        "Copy on Select",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_copy_on_select.help",
+                        "Copy terminal text once after a mouse selection is completed.",
+                    )),
+                    settings_toggle(
+                        "settings-terminal-copy-on-select",
+                        settings.terminal_copy_on_select,
+                        cx,
+                        |app, window, cx| app.toggle_terminal_copy_on_select(window, cx),
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
                         "settings.terminal_paste_images_as_paths",
                         "Paste Images as Paths",
                     ),

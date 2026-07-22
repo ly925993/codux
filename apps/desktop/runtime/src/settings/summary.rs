@@ -61,6 +61,10 @@ fn summary_from_raw(raw: &Map<String, Value>) -> SettingsSummary {
             .and_then(Value::as_str)
             .map(|value| numeric_string(value, 2000, 200, 10_000).to_string())
             .unwrap_or(defaults.terminal_scrollback_lines),
+        terminal_copy_on_select: raw
+            .get("terminalCopyOnSelect")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.terminal_copy_on_select),
         terminal_paste_images_as_paths: raw
             .get("terminalPasteImagesAsPaths")
             .and_then(Value::as_bool)

@@ -480,6 +480,9 @@ impl TerminalModel {
     ) {
         match event {
             codux_terminal_core::TerminalScreenEvent::ClipboardStore(text) => {
+                // OSC 52 is a newer clipboard intent and must invalidate any
+                // selection extraction still running in the background.
+                TERMINAL_CLIPBOARD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             codux_terminal_core::TerminalScreenEvent::Bell => self.on_bell(),
@@ -1222,7 +1225,7 @@ impl TerminalStateHandle {
         if content_covers_selection_range(&content, range) {
             selected_text_from_content(&content, range)
         } else {
-            selected_text_from_screen_range(&self.screen, &content, range)
+            selected_text_from_screen_range(&self.screen, range)
         }
     }
 }
@@ -1289,27 +1292,34 @@ fn assemble_selected_rows(rows: Vec<(String, bool)>) -> String {
 
 fn selected_text_from_screen_range(
     screen: &Arc<Mutex<HeadlessTerminalScreen>>,
-    fallback_content: &TerminalContent,
     range: SelectionRange,
 ) -> String {
+    // The terminal worker captures every required viewport in one command.
+    // Output cannot interleave between chunks, so a large copy never combines
+    // rows from different screen generations.
+    let request = screen
+        .lock()
+        .snapshot_line_range_request(range.start.line, range.end.line);
+    let snapshots = request
+        .snapshots()
+        .into_iter()
+        .map(TerminalContent::from_screen_snapshot)
+        .collect::<Vec<_>>();
     let mut rows = Vec::new();
     let mut line = range.start.line;
-    let mut content = fallback_content.clone();
+    let mut snapshot_index = 0;
     while line <= range.end.line {
-        if !content.line_in_snapshot(line) {
-            let offset = display_offset_for_line(
-                line,
-                content.total_lines,
-                content.screen_lines,
-            );
-            let request = { screen.lock().snapshot_at_offset_request(offset) };
-            content = TerminalContent::from_screen_snapshot(request.snapshot());
+        while snapshots
+            .get(snapshot_index)
+            .is_some_and(|snapshot| !snapshot.line_in_snapshot(line))
+        {
+            snapshot_index += 1;
         }
-        if !content.line_in_snapshot(line) {
+        let Some(content) = snapshots.get(snapshot_index) else {
             rows.push((String::new(), false));
             line = line.saturating_add(1);
             continue;
-        }
+        };
         let chunk_end = content
             .last_snapshot_line()
             .unwrap_or(line)
@@ -1326,7 +1336,7 @@ fn selected_text_from_screen_range(
                 content.columns
             };
             rows.push((
-                selected_line_text(&content, selected_line, start_col, end_col),
+                selected_line_text(content, selected_line, start_col, end_col),
                 content.is_wrapped_line(selected_line),
             ));
         }

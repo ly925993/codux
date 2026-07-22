@@ -203,8 +203,18 @@ pub struct HeadlessTerminalSnapshotRequest {
     rx: mpsc::Receiver<TerminalScreenSnapshot>,
 }
 
+pub struct HeadlessTerminalSnapshotsRequest {
+    rx: mpsc::Receiver<Vec<TerminalScreenSnapshot>>,
+}
+
 impl HeadlessTerminalSnapshotRequest {
     pub fn snapshot(self) -> TerminalScreenSnapshot {
+        self.rx.recv().unwrap_or_default()
+    }
+}
+
+impl HeadlessTerminalSnapshotsRequest {
+    pub fn snapshots(self) -> Vec<TerminalScreenSnapshot> {
         self.rx.recv().unwrap_or_default()
     }
 }
@@ -362,6 +372,26 @@ impl HeadlessTerminalScreen {
             .tx
             .send(TerminalScreenCommand::SnapshotAtOffset { offset, reply: tx });
         HeadlessTerminalSnapshotRequest { rx }
+    }
+
+    /// Capture every viewport needed for an absolute line range as one worker
+    /// command. This keeps all chunks on one terminal generation while the
+    /// caller performs potentially expensive text assembly off-thread.
+    pub fn snapshot_line_range_request(
+        &self,
+        start_line: i32,
+        end_line: i32,
+    ) -> HeadlessTerminalSnapshotsRequest {
+        let (tx, rx) = mpsc::channel();
+        let _ = self
+            .engine
+            .tx
+            .send(TerminalScreenCommand::SnapshotLineRange {
+                start_line,
+                end_line,
+                reply: tx,
+            });
+        HeadlessTerminalSnapshotsRequest { rx }
     }
 
     pub fn display_offset(&self) -> usize {
@@ -587,6 +617,12 @@ enum TerminalScreenCommand {
     SnapshotAtOffset {
         offset: usize,
         reply: mpsc::Sender<TerminalScreenSnapshot>,
+    },
+    // Batch range snapshots are atomic with respect to terminal output.
+    SnapshotLineRange {
+        start_line: i32,
+        end_line: i32,
+        reply: mpsc::Sender<Vec<TerminalScreenSnapshot>>,
     },
     RemoteViewportSnapshot {
         display_offset: usize,
@@ -1111,6 +1147,16 @@ impl TerminalScreenWorker {
                     self.scroll_to_offset(saved);
                     let _ = reply.send(snapshot);
                 }
+                TerminalScreenCommand::SnapshotLineRange {
+                    start_line,
+                    end_line,
+                    reply,
+                } => {
+                    let saved = self.display_offset();
+                    let snapshots = self.snapshot_line_range(start_line, end_line);
+                    self.scroll_to_offset(saved);
+                    let _ = reply.send(snapshots);
+                }
                 TerminalScreenCommand::RemoteViewportSnapshot {
                     display_offset,
                     overscan_rows,
@@ -1296,6 +1342,44 @@ impl TerminalScreenWorker {
         snapshot.total_lines = visible_total;
         snapshot.display_offset = display_offset;
         snapshot
+    }
+
+    fn snapshot_line_range(
+        &mut self,
+        start_line: i32,
+        end_line: i32,
+    ) -> Vec<TerminalScreenSnapshot> {
+        let total = self.total_lines();
+        let rows = self.rows.max(1);
+        let Some(mut line) = usize::try_from(start_line)
+            .ok()
+            .filter(|line| *line < total)
+        else {
+            return Vec::new();
+        };
+        let end = usize::try_from(end_line)
+            .unwrap_or(0)
+            .min(total.saturating_sub(1));
+        if line > end {
+            return Vec::new();
+        }
+
+        let mut snapshots = Vec::new();
+        while line <= end {
+            let offset = total.saturating_sub(rows).saturating_sub(line);
+            self.scroll_to_offset(offset);
+            let snapshot = self.snapshot(0.0, false);
+            let snapshot_top = total
+                .saturating_sub(rows)
+                .saturating_sub(snapshot.display_offset);
+            let next_line = snapshot_top.saturating_add(rows);
+            snapshots.push(snapshot);
+            if next_line <= line {
+                break;
+            }
+            line = next_line;
+        }
+        snapshots
     }
 
     fn total_lines(&self) -> usize {
@@ -2720,6 +2804,29 @@ mod tests {
 
         assert_eq!(snapshot.wrapped_rows.len(), snapshot.rows);
         assert!(snapshot.wrapped_rows.iter().any(|wrapped| *wrapped));
+    }
+
+    #[test]
+    fn line_range_snapshots_cover_history_and_restore_viewport() {
+        let mut screen = HeadlessTerminalScreen::new(20, 3, 100);
+        screen.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven");
+        screen.scroll_lines(2);
+        let before = screen.snapshot().display_offset;
+
+        let snapshots = screen.snapshot_line_range_request(1, 5).snapshots();
+
+        assert_eq!(screen.snapshot().display_offset, before);
+        assert!(snapshots.len() >= 2);
+        assert!(snapshots.iter().all(|snapshot| snapshot.data.is_empty()));
+        for line in 1..=5 {
+            assert!(snapshots.iter().any(|snapshot| {
+                let top = snapshot
+                    .total_lines
+                    .saturating_sub(snapshot.rows)
+                    .saturating_sub(snapshot.display_offset);
+                line >= top && line < top.saturating_add(snapshot.rows)
+            }));
+        }
     }
 
     #[test]

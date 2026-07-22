@@ -13,6 +13,7 @@ impl Default for SettingsSummary {
             terminal_padding: "10".to_string(),
             terminal_line_height: "1.45".to_string(),
             terminal_scrollback_lines: "2000".to_string(),
+            terminal_copy_on_select: false,
             terminal_paste_images_as_paths: true,
             terminal_shell: String::new(),
             file_open_default: "edit".to_string(),

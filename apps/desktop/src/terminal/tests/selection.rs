@@ -204,3 +204,53 @@ fn shift_click_extends_existing_terminal_selection_anchor() {
     );
     assert!(selection.dragging);
 }
+
+#[test]
+fn copy_on_select_schedules_only_one_copy_for_a_completed_range() {
+    assert!(!should_schedule_selection_copy(
+        false,
+        TerminalMouseInteraction::Selecting,
+        MouseButton::Left,
+        true
+    ));
+    assert!(!should_schedule_selection_copy(
+        true,
+        TerminalMouseInteraction::Selecting,
+        MouseButton::Left,
+        false
+    ));
+    assert!(should_schedule_selection_copy(
+        true,
+        TerminalMouseInteraction::Selecting,
+        MouseButton::Left,
+        true
+    ));
+    assert!(!should_schedule_selection_copy(
+        true,
+        TerminalMouseInteraction::Reporting,
+        MouseButton::Left,
+        true
+    ));
+    assert!(!should_schedule_selection_copy(
+        true,
+        TerminalMouseInteraction::Link,
+        MouseButton::Left,
+        true
+    ));
+    assert!(!should_schedule_selection_copy(
+        true,
+        TerminalMouseInteraction::Selecting,
+        MouseButton::Right,
+        true
+    ));
+}
+
+#[test]
+fn copy_on_select_waits_for_multi_clicks_but_not_drag_selections() {
+    assert_eq!(selection_copy_delay(1), TERMINAL_SCROLL_FRAME_INTERVAL);
+    assert_eq!(
+        selection_copy_delay(2),
+        TERMINAL_SELECTION_COPY_DOUBLE_CLICK_DELAY
+    );
+    assert_eq!(selection_copy_delay(3), TERMINAL_SCROLL_FRAME_INTERVAL);
+}

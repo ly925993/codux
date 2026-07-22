@@ -38,11 +38,19 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, LazyLock, OnceLock, mpsc},
+    sync::{
+        Arc, LazyLock, OnceLock,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
 pub use codux_runtime::terminal_pty::TerminalLaunchContext;
+
+// Every clipboard producer shares one sequence so a slower selection task
+// cannot overwrite a newer manual copy or OSC 52 clipboard write.
+static TERMINAL_CLIPBOARD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 include!("terminal/pane.rs");
 include!("terminal/config.rs");

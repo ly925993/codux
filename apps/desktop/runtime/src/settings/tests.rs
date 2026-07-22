@@ -11,7 +11,29 @@ mod tests {
         let support_dir = temp_dir("settings-default-scrollback");
         let summary = SettingsService::new(support_dir).summary();
         assert_eq!(summary.terminal_scrollback_lines, "2000");
+        assert!(!summary.terminal_copy_on_select);
         assert!(summary.wsl_enabled);
+    }
+
+    #[test]
+    fn terminal_copy_on_select_is_opt_in_and_persists() {
+        let support_dir = temp_dir("settings-terminal-copy-on-select");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        assert!(!service.reload_settings().terminal_copy_on_select);
+        let settings = service
+            .toggle_terminal_copy_on_select()
+            .expect("enable terminal copy on select");
+        assert!(settings.terminal_copy_on_select);
+
+        crate::config::flush_all_config_writes();
+        assert!(
+            SettingsService::new(support_dir.clone())
+                .summary()
+                .terminal_copy_on_select
+        );
+
+        fs::remove_dir_all(support_dir).ok();
     }
 
     #[test]
@@ -120,6 +142,7 @@ mod tests {
             store.snapshot().terminal_font_size,
             AppSettings::default().terminal_font_size
         );
+        assert!(!store.snapshot().terminal_copy_on_select);
         crate::config::flush_all_config_writes();
 
         let saved = fs::read_to_string(settings_path).expect("saved settings");

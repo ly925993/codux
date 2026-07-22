@@ -165,6 +165,59 @@ impl CoduxApp {
         self.invalidate_ui_region(cx, UiRegion::Root);
     }
 
+    pub(super) fn toggle_terminal_copy_on_select(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_terminal_copy_on_select",
+            "saving terminal copy setting",
+            move |service| service.toggle_terminal_copy_on_select(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                app.apply_terminal_copy_on_select_setting(cx);
+                if let Some(parent) = app.parent_main_window.clone() {
+                    let _ = parent.update(cx, |main, cx| {
+                        main.apply_settings_update_event(cx);
+                    });
+                }
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    fn apply_terminal_copy_on_select_setting(&self, cx: &mut Context<Self>) {
+        let enabled = self.state.settings.terminal_copy_on_select;
+        for view in self.existing_terminal_views() {
+            view.update(cx, |terminal, _| {
+                terminal.update_copy_on_select(enabled);
+            });
+        }
+    }
+
+    fn existing_terminal_views(&self) -> Vec<Entity<TerminalView>> {
+        let mounted = self
+            .terminals
+            .iter()
+            .flat_map(|tab| tab.panes.iter())
+            .filter_map(|slot| slot.pane.as_ref());
+        let mut seen = HashSet::new();
+
+        // Registered panes include collapsed and floated terminals; mounted
+        // panes cover any local view that does not yet have a stable registry id.
+        self.terminal_pane_registry
+            .values()
+            .chain(mounted)
+            .filter_map(|pane| {
+                seen.insert(pane.view.entity_id())
+                    .then(|| pane.view.clone())
+            })
+            .collect()
+    }
+
     pub(super) fn terminal_config_from_settings(&self) -> TerminalConfig {
         terminal_config_for_settings(&self.state.settings, self.window_appearance)
     }
@@ -173,15 +226,11 @@ impl CoduxApp {
         let config = self.terminal_config_from_settings();
         self.runtime_service
             .set_terminal_query_colors(config.colors.query_colors());
-        for tab in &self.terminals {
-            for slot in &tab.panes {
-                if let Some(pane) = &slot.pane {
-                    let config = config.clone();
-                    pane.view.update(cx, |terminal, cx| {
-                        terminal.update_config(config, cx);
-                    });
-                }
-            }
+        for view in self.existing_terminal_views() {
+            let config = config.clone();
+            view.update(cx, |terminal, cx| {
+                terminal.update_config(config, cx);
+            });
         }
     }
 
@@ -192,10 +241,17 @@ impl CoduxApp {
         }
 
         self.settings_seen_revision = event.revision;
+        let previous_settings = self.state.settings.clone();
         let settings = self.runtime_service.reload_settings();
         self.state.tool_permissions = self.runtime_service.sync_tool_permissions();
         if event.statistics_revision == event.revision {
             self.apply_settings_summary_local(settings);
+            if self.window_mode == AppWindowMode::Main
+                && previous_settings.terminal_copy_on_select
+                    != self.state.settings.terminal_copy_on_select
+            {
+                self.apply_terminal_copy_on_select_setting(cx);
+            }
             self.status_message = "AI statistics mode updated".to_string();
             if self.window_mode == AppWindowMode::Main {
                 self.invalidate_ui(
@@ -222,7 +278,13 @@ impl CoduxApp {
             cx,
         );
         if self.window_mode == AppWindowMode::Main {
-            self.apply_terminal_text_settings(cx);
+            if terminal_config_except_copy_changed(&previous_settings, &self.state.settings) {
+                self.apply_terminal_text_settings(cx);
+            } else if previous_settings.terminal_copy_on_select
+                != self.state.settings.terminal_copy_on_select
+            {
+                self.apply_terminal_copy_on_select_setting(cx);
+            }
             self.sync_desktop_pet_window(false, cx);
         }
         self.status_message = "settings updated".to_string();
@@ -1839,4 +1901,20 @@ impl CoduxApp {
                 .map(|provider| provider.id.clone());
         }
     }
+}
+
+pub(in crate::app) fn terminal_config_except_copy_changed(
+    previous: &SettingsSummary,
+    current: &SettingsSummary,
+) -> bool {
+    previous.language != current.language
+        || previous.theme != current.theme
+        || previous.theme_color != current.theme_color
+        || previous.terminal_font_family != current.terminal_font_family
+        || previous.terminal_font_size != current.terminal_font_size
+        || previous.terminal_padding != current.terminal_padding
+        || previous.terminal_line_height != current.terminal_line_height
+        || previous.terminal_scrollback_lines != current.terminal_scrollback_lines
+        || previous.terminal_paste_images_as_paths != current.terminal_paste_images_as_paths
+        || previous.terminal_shell != current.terminal_shell
 }

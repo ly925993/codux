@@ -15,6 +15,8 @@ pub struct SettingsSummary {
     /// Terminal line-height multiplier (1.0-2.0).
     pub terminal_line_height: String,
     pub terminal_scrollback_lines: String,
+    /// Copies a completed mouse selection once, after the selection event finishes.
+    pub terminal_copy_on_select: bool,
     pub terminal_paste_images_as_paths: bool,
     /// Absolute path of the preferred terminal shell; empty = platform default.
     pub terminal_shell: String,

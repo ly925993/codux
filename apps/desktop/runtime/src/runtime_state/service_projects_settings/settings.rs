@@ -93,6 +93,10 @@ impl RuntimeService {
         })
     }
 
+    pub fn toggle_terminal_copy_on_select(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| settings.toggle_terminal_copy_on_select())
+    }
+
     pub fn cycle_terminal_font_size(&self) -> Result<SettingsSummary, String> {
         self.update_settings_with_side_effects(|settings| settings.cycle_terminal_font_size())
     }

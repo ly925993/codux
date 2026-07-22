@@ -8,6 +8,8 @@ pub struct TerminalConfig {
     pub line_height_multiplier: f32,
     pub padding: Edges<Pixels>,
     pub colors: ColorPalette,
+    /// Copies completed mouse selections without affecting explicit copy shortcuts.
+    pub copy_on_select: bool,
     pub paste_images_as_paths: bool,
     /// Resolved i18n locale (e.g. "en", "zh-Hans") for in-terminal UI like the
     /// handoff placeholder. Empty = fall back to the provided default string.
@@ -48,6 +50,7 @@ pub fn terminal_config() -> TerminalConfig {
         line_height_multiplier: DEFAULT_TERMINAL_LINE_HEIGHT_MULTIPLIER,
         padding: Edges::all(px(10.0)),
         colors,
+        copy_on_select: false,
         paste_images_as_paths: true,
         language: String::new(),
         shell: None,

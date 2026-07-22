@@ -54,6 +54,7 @@ fn default_terminal_line_height_matches_renderer_cell_height() {
         config.line_height_multiplier,
         DEFAULT_TERMINAL_LINE_HEIGHT_MULTIPLIER
     );
+    assert!(!config.copy_on_select);
 
     let renderer = TerminalRenderer::new(
         config.font_family,

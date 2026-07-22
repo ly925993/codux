@@ -18,6 +18,9 @@ pub struct TerminalView {
     suppressed_text_input: Option<TerminalSuppressedTextInput>,
     scroll_input: TerminalScrollInputState,
     selection_frame_pending: bool,
+    // A generation token cancels stale debounce and background extraction tasks.
+    selection_copy_generation: u64,
+    mouse_interaction: TerminalMouseInteraction,
     pending_pty_resize: Option<(u16, u16)>,
     pty_resize_flush_pending: bool,
     last_pty_resize_at: Option<Instant>,
@@ -78,6 +81,10 @@ impl TerminalMarkedText {
 }
 
 const TERMINAL_TEXT_INPUT_SUPPRESS_WINDOW: Duration = Duration::from_millis(350);
+
+// Drag selections copy after one frame. A short double-click grace period lets
+// a third click replace a pending word copy without making copy feel delayed.
+const TERMINAL_SELECTION_COPY_DOUBLE_CLICK_DELAY: Duration = Duration::from_millis(120);
 
 const TERMINAL_SEARCH_MAX_MATCHES: usize = 1000;
 
@@ -231,6 +238,8 @@ impl TerminalView {
             suppressed_text_input: None,
             scroll_input: TerminalScrollInputState::default(),
             selection_frame_pending: false,
+            selection_copy_generation: 0,
+            mouse_interaction: TerminalMouseInteraction::None,
             pending_pty_resize: None,
             pty_resize_flush_pending: false,
             last_pty_resize_at: None,
@@ -311,6 +320,9 @@ impl TerminalView {
     }
 
     pub fn update_config(&mut self, config: TerminalConfig, cx: &mut Context<Self>) {
+        if self.config.copy_on_select != config.copy_on_select {
+            self.invalidate_pending_selection_copy();
+        }
         self.renderer.font_family = config.font_family.clone();
         self.renderer.font_size = config.font_size;
         self.renderer.line_height_multiplier = config.line_height_multiplier;
@@ -322,6 +334,14 @@ impl TerminalView {
         });
         self.config = config;
         cx.notify();
+    }
+
+    pub fn update_copy_on_select(&mut self, copy_on_select: bool) {
+        if self.config.copy_on_select == copy_on_select {
+            return;
+        }
+        self.invalidate_pending_selection_copy();
+        self.config.copy_on_select = copy_on_select;
     }
 
     pub fn set_focus_observer<F>(&mut self, observer: F)
@@ -698,12 +718,18 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        self.mouse_interaction = TerminalMouseInteraction::None;
+        if event.button == MouseButton::Left {
+            // Any new left-button gesture supersedes a pending automatic copy.
+            self.invalidate_pending_selection_copy();
+        }
         let point = self.layout.lock().cell_at(event.position);
         let model_point = self.layout.lock().model_cell_at(event.position);
         if event.button == MouseButton::Left
             && event.modifiers.secondary()
             && let Some(link) = model_point.and_then(|point| self.link_at_cell(point, cx))
         {
+            self.mouse_interaction = TerminalMouseInteraction::Link;
             if let Some(opener) = self.link_opener.clone() {
                 opener(link.url.clone(), window, cx);
             } else if let Err(error) = codux_runtime::app_commands::app_open_url(link.url.clone()) {
@@ -716,6 +742,7 @@ impl TerminalView {
         }
 
         if event.button == MouseButton::Left && event.modifiers.shift {
+            self.mouse_interaction = TerminalMouseInteraction::Selecting;
             if let Some(point) = model_point {
                 let selection_point = self.selection_point_from_cell(point, cx);
                 self.selection.lock().extend(selection_point);
@@ -735,6 +762,7 @@ impl TerminalView {
         }
 
         if self.should_report_mouse(event.modifiers.shift, cx) {
+            self.mouse_interaction = TerminalMouseInteraction::Reporting;
             if let Some(point) = point {
                 self.send_mouse_report(
                     Some(event.button),
@@ -751,6 +779,7 @@ impl TerminalView {
 
         match event.button {
             MouseButton::Left => {
+                self.mouse_interaction = TerminalMouseInteraction::Selecting;
                 if let Some(point) = model_point {
                     let selection_point = self.selection_point_from_cell(point, cx);
                     match event.click_count {
@@ -805,10 +834,11 @@ impl TerminalView {
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let interaction = std::mem::take(&mut self.mouse_interaction);
         let selection_dragging = self.selection.lock().dragging;
         let drag_cell = self.layout.lock().drag_cell_at(event.position);
-        if let Some((point, _)) = drag_cell {
-            if self.should_report_mouse(event.modifiers.shift, cx) {
+        if interaction == TerminalMouseInteraction::Reporting {
+            if let Some((point, _)) = drag_cell {
                 self.send_mouse_report(
                     Some(event.button),
                     point,
@@ -816,11 +846,13 @@ impl TerminalView {
                     event.modifiers,
                     cx,
                 );
-                cx.stop_propagation();
-                cx.notify();
-                return;
             }
-            if selection_dragging {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if let Some((point, _)) = drag_cell {
+            if interaction == TerminalMouseInteraction::Selecting && selection_dragging {
                 let point = self
                     .layout
                     .lock()
@@ -831,10 +863,25 @@ impl TerminalView {
                 self.model
                     .update(cx, |model, _| model.update_selection(selection_point));
             }
-        } else {
+        } else if interaction == TerminalMouseInteraction::Selecting {
             self.selection.lock().dragging = false;
         }
         self.selection_autoscroll = None;
+        // Freeze the completed range now. Delayed work must never copy a range
+        // installed later by Select All, search navigation, or another click.
+        let selection_range = self.selection.lock().range();
+        if should_schedule_selection_copy(
+            self.config.copy_on_select,
+            interaction,
+            event.button,
+            selection_range.is_some(),
+        ) {
+            self.schedule_copy_selected_text(
+                event.click_count,
+                selection_range.expect("selection presence checked above"),
+                cx,
+            );
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -851,7 +898,12 @@ impl TerminalView {
             cx.notify();
         }
 
-        if self.should_report_mouse(event.modifiers.shift, cx) {
+        let reports_mouse = if event.dragging() {
+            self.mouse_interaction == TerminalMouseInteraction::Reporting
+        } else {
+            self.should_report_mouse(event.modifiers.shift, cx)
+        };
+        if reports_mouse {
             let Some(point) = self.layout.lock().cell_at(event.position) else {
                 return;
             };
@@ -1201,8 +1253,64 @@ impl TerminalView {
         let Some(text) = self.selected_text(cx) else {
             return false;
         };
+        TERMINAL_CLIPBOARD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         true
+    }
+
+    fn invalidate_pending_selection_copy(&mut self) -> u64 {
+        self.selection_copy_generation = self.selection_copy_generation.wrapping_add(1);
+        self.selection_copy_generation
+    }
+
+    fn schedule_copy_selected_text(
+        &mut self,
+        click_count: usize,
+        range: SelectionRange,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.invalidate_pending_selection_copy();
+        let global_sequence = TERMINAL_CLIPBOARD_SEQUENCE
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let delay = selection_copy_delay(click_count);
+        let timer = cx.background_executor().clone();
+        let extractor = timer.clone();
+
+        cx.spawn(async move |terminal: WeakEntity<Self>, cx| {
+            timer.timer(delay).await;
+            let Ok(Some(handle)) = terminal.update(cx, |terminal, cx| {
+                if terminal.selection_copy_generation != generation
+                    || !terminal.config.copy_on_select
+                    || terminal.model.read(cx).selection_range() != Some(range)
+                {
+                    return None;
+                }
+                Some(terminal.model.read(cx).handle.clone())
+            }) else {
+                return;
+            };
+
+            // Building text across scrollback can be linear in selection size,
+            // so keep that work off the UI thread and only hand off the result.
+            let text = extractor
+                .spawn(async move { handle.selected_text_for_range(range) })
+                .await;
+            if text.is_empty() {
+                return;
+            }
+            let _ = terminal.update(cx, |terminal, cx| {
+                let selection_unchanged = terminal.model.read(cx).selection_range() == Some(range);
+                if terminal.selection_copy_generation == generation
+                    && terminal.config.copy_on_select
+                    && selection_unchanged
+                    && TERMINAL_CLIPBOARD_SEQUENCE.load(Ordering::Relaxed) == global_sequence
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            });
+        })
+        .detach();
     }
 
     fn set_marked_text(

@@ -870,6 +870,35 @@ struct SelectionRange {
     end: TerminalSelectionPoint,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TerminalMouseInteraction {
+    #[default]
+    None,
+    Selecting,
+    Reporting,
+    Link,
+}
+
+fn should_schedule_selection_copy(
+    copy_on_select: bool,
+    interaction: TerminalMouseInteraction,
+    button: MouseButton,
+    has_selection: bool,
+) -> bool {
+    copy_on_select
+        && interaction == TerminalMouseInteraction::Selecting
+        && button == MouseButton::Left
+        && has_selection
+}
+
+fn selection_copy_delay(click_count: usize) -> Duration {
+    if click_count == 2 {
+        TERMINAL_SELECTION_COPY_DOUBLE_CLICK_DELAY
+    } else {
+        TERMINAL_SCROLL_FRAME_INTERVAL
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct SelectionState {
     anchor: Option<TerminalSelectionPoint>,

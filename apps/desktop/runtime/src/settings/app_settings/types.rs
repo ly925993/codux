@@ -47,6 +47,9 @@ pub struct AppSettings {
     pub terminal_font_size: String,
     #[serde(default = "default_terminal_scrollback_lines")]
     pub terminal_scrollback_lines: String,
+    /// Opt-in because automatic copying replaces the user's current clipboard contents.
+    #[serde(default)]
+    pub terminal_copy_on_select: bool,
     #[serde(default = "default_terminal_paste_images_as_paths")]
     pub terminal_paste_images_as_paths: bool,
     #[serde(default = "default_icon_style")]

@@ -15,6 +15,7 @@ impl CoduxApp {
         cx: &mut Context<Self>,
     ) {
         let pane_label = pane.label(&self.state.settings.language);
+        let parent_main_window = cx.entity().downgrade();
         let opened = self.open_auxiliary_window(
             AuxiliaryWindowSpec {
                 slot: AuxiliaryWindowSlot::Settings,
@@ -30,6 +31,9 @@ impl CoduxApp {
                 let mut app =
                     CoduxApp::new_settings_window_from_state(state, runtime, runtime_service);
                 app.active_settings_pane = pane;
+                // Settings save locally, then notify the owning main window
+                // immediately; its polling loop remains a recovery fallback.
+                app.parent_main_window = Some(parent_main_window);
                 let _ = (window, cx);
                 app
             },

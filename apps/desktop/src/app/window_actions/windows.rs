@@ -248,8 +248,8 @@ impl CoduxApp {
                 .settings_revision,
             child_window_ssh_seen_revision: current_child_window_update_event().ssh_revision,
             child_window_memory_seen_revision: current_child_window_update_event().memory_revision,
-            child_window_project_seen_revision: current_child_window_update_event()
-                .project_revision,
+            child_window_database_seen_revision: current_child_window_update_event()
+                .database_revision,
             child_window_worktree_seen_revision: current_child_window_update_event()
                 .worktree_revision,
             child_window_git_seen_revision: current_child_window_update_event().git_revision,
@@ -309,6 +309,7 @@ impl CoduxApp {
             selected_runtime_terminal_id,
             selected_ssh_profile_id: None,
             selected_db_profile_id: None,
+            db_saving: false,
             db_testing: false,
             db_test_result: None,
             db_draft_id: None,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::app_events::{ChildWindowUpdateKind, publish_child_window_update};
+use codux_runtime::db::DBProfilesSnapshot;
 
 impl CoduxApp {
     pub(in crate::app) fn db_text(&self, key: &str, fallback: &str) -> String {
@@ -99,6 +100,7 @@ impl CoduxApp {
         self.db_draft_ssl_mode = "prefer".to_string();
         self.db_draft_read_only = true;
         self.db_test_result = None;
+        self.db_saving = false;
         self.db_testing = false;
     }
 
@@ -161,6 +163,9 @@ impl CoduxApp {
     }
 
     pub(super) fn save_db_profile_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db_saving || self.db_testing {
+            return;
+        }
         let request = match self.db_draft_request() {
             Ok(request) => request,
             Err(error) => {
@@ -170,9 +175,53 @@ impl CoduxApp {
             }
         };
         let requested_id = request.id.clone();
-        match self.runtime_service.upsert_db_profile(request) {
+        let service = self.runtime_service.clone();
+        let window_handle = window.window_handle();
+        self.db_saving = true;
+        self.status_message = self.db_text("db.profile.saving", "Saving database profile...");
+        self.runtime_trace("database", "db_profile_save queued");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                let started_at = std::time::Instant::now();
+                service.runtime_trace_frontend("database", "db_profile_save start");
+                let result = service.upsert_db_profile(request);
+                service.runtime_trace_frontend(
+                    "database",
+                    &format!(
+                        "db_profile_save {} elapsed_ms={}",
+                        if result.is_ok() { "ok" } else { "failed" },
+                        started_at.elapsed().as_millis()
+                    ),
+                );
+                result
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to join database profile save: {error}")));
+
+            // Publish independently of the editor lifetime so Cmd+W cannot hide a completed save.
+            if result.is_ok() {
+                publish_child_window_update(ChildWindowUpdateKind::Database);
+            }
+            let _ = window_handle.update(cx, |_root, window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.apply_db_profile_save_result(result, requested_id, window, cx);
+                });
+            });
+        })
+        .detach();
+        self.invalidate_db_panel(cx);
+    }
+
+    fn apply_db_profile_save_result(
+        &mut self,
+        result: Result<DBProfilesSnapshot, String>,
+        requested_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.db_saving = false;
+        match result {
             Ok(snapshot) => {
-                self.reload_selected_project_db();
                 self.selected_db_profile_id = requested_id.or_else(|| {
                     snapshot
                         .profiles
@@ -180,9 +229,7 @@ impl CoduxApp {
                         .max_by_key(|profile| profile.updated_at)
                         .map(|profile| profile.id.clone())
                 });
-                self.normalize_selected_db_profile();
                 self.status_message = self.db_text("db.profile.saved", "Database profile saved");
-                publish_child_window_update(ChildWindowUpdateKind::Project);
                 if self.window_mode == AppWindowMode::DbProfileEditor {
                     window.remove_window();
                 }
@@ -236,7 +283,7 @@ impl CoduxApp {
     }
 
     pub(super) fn test_db_profile_draft(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.db_testing {
+        if self.db_testing || self.db_saving {
             return;
         }
         let request = match self.db_draft_request() {

@@ -279,6 +279,7 @@ impl Render for CoduxApp {
                 .child(db_profile_editor_workspace(
                     self,
                     self.db_testing,
+                    self.db_saving,
                     window,
                     cx,
                 ))

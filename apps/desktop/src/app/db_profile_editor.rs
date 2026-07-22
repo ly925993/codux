@@ -75,6 +75,7 @@ fn db_ssl_options(labels: &DbProfileEditorLabels) -> Vec<CoduxSelectOption> {
 pub(in crate::app) fn db_profile_editor_workspace(
     app: &CoduxApp,
     db_testing: bool,
+    db_saving: bool,
     window: &mut Window,
     cx: &mut Context<CoduxApp>,
 ) -> impl IntoElement {
@@ -97,14 +98,17 @@ pub(in crate::app) fn db_profile_editor_workspace(
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(dialog_cancel_button(
-                        "db-editor-cancel",
-                        labels.cancel.clone(),
-                        cx,
-                        |_app, _event, window, _cx| {
-                            window.remove_window();
-                        },
-                    ))
+                    .child(
+                        dialog_cancel_button(
+                            "db-editor-cancel",
+                            labels.cancel.clone(),
+                            cx,
+                            |_app, _event, window, _cx| {
+                                window.remove_window();
+                            },
+                        )
+                        .disabled(db_saving),
+                    )
                     .child(
                         dialog_secondary_button(
                             "db-editor-test",
@@ -117,14 +121,18 @@ pub(in crate::app) fn db_profile_editor_workspace(
                             |app, _event, window, cx| app.test_db_profile_draft(window, cx),
                         )
                         .loading(db_testing)
-                        .disabled(db_testing),
+                        .disabled(db_testing || db_saving),
                     )
-                    .child(dialog_primary_button(
-                        "db-editor-save",
-                        labels.save.clone(),
-                        cx,
-                        |app, _event, window, cx| app.save_db_profile_draft(window, cx),
-                    )),
+                    .child(
+                        dialog_primary_button(
+                            "db-editor-save",
+                            labels.save.clone(),
+                            cx,
+                            |app, _event, window, cx| app.save_db_profile_draft(window, cx),
+                        )
+                        .loading(db_saving)
+                        .disabled(db_saving || db_testing),
+                    ),
             );
 
     child_window_shell(
@@ -150,6 +158,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                 DbDialogInputOptions {
                     placeholder: labels.name_placeholder.clone(),
                     masked: false,
+                    disabled: db_saving,
                 },
                 window,
                 cx,
@@ -160,6 +169,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                 labels.engine.clone(),
                 &app.db_draft_engine,
                 (db_engine_options(), labels.select.clone()),
+                db_saving,
                 window,
                 cx,
                 |app, value, window, cx| app.set_db_draft_field("engine", value, window, cx),
@@ -178,6 +188,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                             DbDialogInputOptions {
                                 placeholder: "localhost".to_string(),
                                 masked: false,
+                                disabled: db_saving,
                             },
                             window,
                             cx,
@@ -197,6 +208,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                                 }
                                 .to_string(),
                                 masked: false,
+                                disabled: db_saving,
                             },
                             window,
                             cx,
@@ -212,6 +224,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                     DbDialogInputOptions {
                         placeholder: "app".to_string(),
                         masked: false,
+                        disabled: db_saving,
                     },
                     window,
                     cx,
@@ -224,6 +237,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                     DbDialogInputOptions {
                         placeholder: labels.password_placeholder.clone(),
                         masked: true,
+                        disabled: db_saving,
                     },
                     window,
                     cx,
@@ -234,6 +248,7 @@ pub(in crate::app) fn db_profile_editor_workspace(
                     labels.ssl_mode.clone(),
                     &app.db_draft_ssl_mode,
                     (db_ssl_options(&labels), labels.select.clone()),
+                    db_saving,
                     window,
                     cx,
                     |app, value, window, cx| app.set_db_draft_field("sslMode", value, window, cx),
@@ -251,12 +266,18 @@ pub(in crate::app) fn db_profile_editor_workspace(
                     }
                     .to_string(),
                     masked: false,
+                    disabled: db_saving,
                 },
                 window,
                 cx,
                 |app, value, window, cx| app.set_db_draft_field("database", value, window, cx),
             ))
-            .child(read_only_toggle(app.db_draft_read_only, &labels, cx)),
+            .child(read_only_toggle(
+                app.db_draft_read_only,
+                db_saving,
+                &labels,
+                cx,
+            )),
     )
     .child(dialog_footer_bar(footer, cx))
 }
@@ -284,6 +305,7 @@ fn db_test_result_message(message: String, ok: bool) -> impl IntoElement {
 struct DbDialogInputOptions {
     placeholder: String,
     masked: bool,
+    disabled: bool,
 }
 
 fn db_dialog_input(
@@ -298,6 +320,7 @@ fn db_dialog_input(
     let DbDialogInputOptions {
         placeholder,
         masked,
+        disabled,
     } = options;
     let value = value.to_string();
     let state = window.use_keyed_state(SharedString::from(format!("db-input-{id}")), cx, {
@@ -333,7 +356,11 @@ fn db_dialog_input(
                 .text_color(color(theme::TEXT_MUTED))
                 .child(label),
         )
-        .child(Input::new(&state).with_size(Size::Medium))
+        .child(
+            Input::new(&state)
+                .with_size(Size::Medium)
+                .disabled(disabled),
+        )
 }
 
 fn db_dialog_select(
@@ -341,6 +368,7 @@ fn db_dialog_select(
     label: String,
     value: &str,
     select: (Vec<CoduxSelectOption>, String),
+    disabled: bool,
     _window: &mut Window,
     cx: &mut Context<CoduxApp>,
     action: impl Fn(&mut CoduxApp, String, &mut Window, &mut Context<CoduxApp>) + 'static,
@@ -366,7 +394,7 @@ fn db_dialog_select(
                 placeholder: select_label.into(),
                 width: relative(1.0).into(),
                 menu_width: px(220.0),
-                disabled: false,
+                disabled,
             },
             cx,
             action,
@@ -375,6 +403,7 @@ fn db_dialog_select(
 
 fn read_only_toggle(
     read_only: bool,
+    disabled: bool,
     labels: &DbProfileEditorLabels,
     cx: &mut Context<CoduxApp>,
 ) -> impl IntoElement {
@@ -394,6 +423,7 @@ fn read_only_toggle(
         .child(
             Switch::new("db-read-only-toggle")
                 .checked(read_only)
+                .disabled(disabled)
                 .on_click(cx.listener(move |app, _event, _window, cx| {
                     app.set_db_draft_read_only(!read_only, cx)
                 })),

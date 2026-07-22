@@ -62,6 +62,7 @@ pub(super) fn sanitize_profiles(profiles: Vec<DBConnectionProfile>) -> Vec<DBCon
     profiles
         .into_iter()
         .filter_map(|profile| {
+            let updated_at = profile.updated_at;
             sanitize_request(DBProfileUpsertRequest {
                 id: Some(profile.id),
                 project_id: profile.project_id,
@@ -76,6 +77,11 @@ pub(super) fn sanitize_profiles(profiles: Vec<DBConnectionProfile>) -> Vec<DBCon
                 read_only: profile.read_only,
             })
             .ok()
+            .map(|mut sanitized| {
+                // Loading existing profiles must not make every connection look newly updated.
+                sanitized.updated_at = updated_at;
+                sanitized
+            })
         })
         .collect()
 }

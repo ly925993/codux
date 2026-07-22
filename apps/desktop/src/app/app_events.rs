@@ -33,7 +33,7 @@ pub(in crate::app) struct ChildWindowUpdateEvent {
     pub(in crate::app) settings_revision: u64,
     pub(in crate::app) ssh_revision: u64,
     pub(in crate::app) memory_revision: u64,
-    pub(in crate::app) project_revision: u64,
+    pub(in crate::app) database_revision: u64,
     pub(in crate::app) worktree_revision: u64,
     pub(in crate::app) git_revision: u64,
     pub(in crate::app) git_running_label: Option<String>,
@@ -44,7 +44,7 @@ pub(in crate::app) enum ChildWindowUpdateKind {
     Settings,
     Ssh,
     Memory,
-    Project,
+    Database,
     Worktree,
     Git,
 }
@@ -169,6 +169,11 @@ pub(in crate::app) fn publish_child_window_update(kind: ChildWindowUpdateKind) -
     let Ok(mut event) = child_window_update_event().lock() else {
         return 0;
     };
+    bump_child_window_update(&mut event, kind);
+    event.revision
+}
+
+fn bump_child_window_update(event: &mut ChildWindowUpdateEvent, kind: ChildWindowUpdateKind) {
     event.revision = event.revision.saturating_add(1);
     match kind {
         ChildWindowUpdateKind::Settings => {
@@ -178,15 +183,31 @@ pub(in crate::app) fn publish_child_window_update(kind: ChildWindowUpdateKind) -
         ChildWindowUpdateKind::Memory => {
             event.memory_revision = event.memory_revision.saturating_add(1)
         }
-        ChildWindowUpdateKind::Project => {
-            event.project_revision = event.project_revision.saturating_add(1)
+        ChildWindowUpdateKind::Database => {
+            event.database_revision = event.database_revision.saturating_add(1)
         }
         ChildWindowUpdateKind::Worktree => {
             event.worktree_revision = event.worktree_revision.saturating_add(1)
         }
         ChildWindowUpdateKind::Git => event.git_revision = event.git_revision.saturating_add(1),
     }
-    event.revision
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_update_does_not_mark_project_state_dirty() {
+        let mut event = ChildWindowUpdateEvent::default();
+
+        bump_child_window_update(&mut event, ChildWindowUpdateKind::Database);
+
+        assert_eq!(event.revision, 1);
+        assert_eq!(event.database_revision, 1);
+        assert_eq!(event.ssh_revision, 0);
+        assert_eq!(event.worktree_revision, 0);
+    }
 }
 
 pub(in crate::app) fn publish_child_window_git_operation(label: Option<String>) -> u64 {

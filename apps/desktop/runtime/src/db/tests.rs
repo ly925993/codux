@@ -4,6 +4,8 @@ use super::helpers::{
 use super::*;
 use serde_json::Value;
 use std::fs;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use uuid::Uuid;
 
 fn profile_with_secret(project_id: &str) -> DBConnectionProfile {
@@ -110,6 +112,151 @@ fn db_store_filters_profiles_by_root_project() {
         profiles[0].get("password").and_then(Value::as_str),
         Some("secret-a")
     );
+
+    store
+        .upsert(DBProfileUpsertRequest {
+            id: Some("db-1".to_string()),
+            project_id: "project-a".to_string(),
+            name: "A updated".to_string(),
+            engine: "postgres".to_string(),
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            database: "app_a".to_string(),
+            username: Some("user_a".to_string()),
+            password: Some("secret-a".to_string()),
+            ssl_mode: Some("prefer".to_string()),
+            read_only: true,
+        })
+        .unwrap();
+    let updated = store.snapshot(Some("project-a"));
+    assert_eq!(updated.profiles.len(), 1);
+    assert_eq!(updated.profiles[0].name, "A updated");
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn loading_profiles_preserves_their_update_timestamp() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-load-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let profile = profile_with_secret("project-a");
+    crate::config::ConfigDocumentStore::for_file(db_profiles_file_path_in(support_dir.clone()))
+        .save_snapshot(&vec![profile.clone()])
+        .unwrap();
+
+    let snapshot = DBStore::from_support_dir(support_dir.clone()).snapshot(Some("project-a"));
+
+    assert_eq!(snapshot.profiles, vec![profile]);
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn concurrent_db_stores_do_not_overwrite_each_other() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-concurrent-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let stores = (0..8)
+        .map(|_| DBStore::from_support_dir(support_dir.clone()))
+        .collect::<Vec<_>>();
+    let barrier = Arc::new(Barrier::new(stores.len()));
+
+    let handles = stores
+        .into_iter()
+        .enumerate()
+        .map(|(index, store)| {
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                store
+                    .upsert(DBProfileUpsertRequest {
+                        id: Some(format!("db-{index}")),
+                        project_id: "project-a".to_string(),
+                        name: format!("Database {index}"),
+                        engine: "postgres".to_string(),
+                        host: Some("localhost".to_string()),
+                        port: Some(5432),
+                        database: format!("app_{index}"),
+                        username: Some("app".to_string()),
+                        password: None,
+                        ssl_mode: Some("prefer".to_string()),
+                        read_only: true,
+                    })
+                    .unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let snapshot = DBStore::from_support_dir(support_dir.clone()).snapshot(Some("project-a"));
+    assert_eq!(snapshot.profiles.len(), 8);
+
+    // Flush the debounced writer and verify the same complete snapshot reached disk.
+    crate::config::flush_all_config_writes();
+    let persisted: Vec<DBConnectionProfile> = serde_json::from_str(
+        &fs::read_to_string(db_profiles_file_path_in(support_dir.clone())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted.len(), 8);
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn concurrent_upsert_and_delete_preserve_both_mutations() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-mixed-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    DBStore::from_support_dir(support_dir.clone())
+        .upsert(DBProfileUpsertRequest {
+            id: Some("db-delete".to_string()),
+            project_id: "project-a".to_string(),
+            name: "Delete me".to_string(),
+            engine: "postgres".to_string(),
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            database: "old_app".to_string(),
+            username: Some("app".to_string()),
+            password: None,
+            ssl_mode: Some("prefer".to_string()),
+            read_only: true,
+        })
+        .unwrap();
+
+    // Construct separate stores before either mutation to reproduce the former stale-snapshot race.
+    let upsert_store = DBStore::from_support_dir(support_dir.clone());
+    let delete_store = DBStore::from_support_dir(support_dir.clone());
+    let barrier = Arc::new(Barrier::new(2));
+    let upsert_barrier = Arc::clone(&barrier);
+    let upsert = thread::spawn(move || {
+        upsert_barrier.wait();
+        upsert_store
+            .upsert(DBProfileUpsertRequest {
+                id: Some("db-new".to_string()),
+                project_id: "project-a".to_string(),
+                name: "New database".to_string(),
+                engine: "postgres".to_string(),
+                host: Some("localhost".to_string()),
+                port: Some(5432),
+                database: "new_app".to_string(),
+                username: Some("app".to_string()),
+                password: None,
+                ssl_mode: Some("prefer".to_string()),
+                read_only: true,
+            })
+            .unwrap();
+    });
+    let delete = thread::spawn(move || {
+        barrier.wait();
+        delete_store
+            .delete("project-a", "db-delete".to_string())
+            .unwrap();
+    });
+    upsert.join().unwrap();
+    delete.join().unwrap();
+
+    let snapshot = DBStore::from_support_dir(support_dir.clone()).snapshot(Some("project-a"));
+    assert_eq!(snapshot.profiles.len(), 1);
+    assert_eq!(snapshot.profiles[0].id, "db-new");
 
     fs::remove_dir_all(support_dir).ok();
 }

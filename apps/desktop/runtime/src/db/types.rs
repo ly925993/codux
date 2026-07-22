@@ -22,7 +22,7 @@ pub struct DBProfileSummary {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DBConnectionProfile {
     pub id: String,

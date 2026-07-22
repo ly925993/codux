@@ -1,7 +1,7 @@
 use crate::runtime_paths::app_support_dir;
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::Arc,
 };
 
 mod helpers;
@@ -21,8 +21,7 @@ use test_command::{run_db_test_command, write_test_profile_file};
 pub use types::*;
 
 pub struct DBStore {
-    profiles: Mutex<Vec<DBConnectionProfile>>,
-    state_file: PathBuf,
+    document_store: Arc<crate::config::ConfigDocumentStore>,
 }
 
 impl DBStore {
@@ -32,57 +31,45 @@ impl DBStore {
 
     pub fn from_support_dir(support_dir: PathBuf) -> Self {
         let state_file = db_profiles_file_path_in(support_dir);
-        let profiles = load_profiles(&state_file).unwrap_or_default();
-        let store = Self {
-            profiles: Mutex::new(sanitize_profiles(profiles)),
-            state_file,
-        };
-        let _ = store.save();
-        store
+        let document_store = crate::config::ConfigDocumentStore::for_file(state_file);
+        let loaded_profiles = profiles_from_document(&document_store.snapshot());
+        if sanitize_profiles(loaded_profiles.clone()) != loaded_profiles {
+            // Re-read under the shared document lock so migration cannot overwrite a concurrent save.
+            let _ = document_store.update(|document| {
+                let loaded_profiles = profiles_from_document(document);
+                let profiles = sanitize_profiles(loaded_profiles.clone());
+                if profiles != loaded_profiles {
+                    *document =
+                        serde_json::to_value(profiles).map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            });
+        }
+        Self { document_store }
     }
 
     pub fn snapshot(&self, project_id: Option<&str>) -> DBProfilesSnapshot {
-        let mut profiles = self
-            .profiles
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|profile| {
-                project_id
-                    .map(|project_id| profile.project_id == project_id)
-                    .unwrap_or(true)
-            })
-            .collect::<Vec<_>>();
-        profiles.sort_by(|left, right| {
-            display_name(left)
-                .to_lowercase()
-                .cmp(&display_name(right).to_lowercase())
-        });
-        DBProfilesSnapshot {
-            project_id: project_id.map(str::to_string),
-            profiles,
-        }
+        let profiles = profiles_from_document(&self.document_store.snapshot());
+        snapshot_from_profiles(profiles, project_id)
     }
 
     pub fn upsert(&self, request: DBProfileUpsertRequest) -> Result<DBProfilesSnapshot, String> {
         let project_id = request.project_id.trim().to_string();
         let profile = sanitize_request(request)?;
-        let mut profiles = self
-            .profiles
-            .lock()
-            .map_err(|_| "Database profile store lock poisoned.".to_string())?;
-        if let Some(index) = profiles
-            .iter()
-            .position(|item| item.project_id == profile.project_id && item.id == profile.id)
-        {
-            profiles[index] = profile;
-        } else {
-            profiles.push(profile);
-        }
-        drop(profiles);
-        self.save()?;
-        Ok(self.snapshot(Some(&project_id)))
+        let profiles = self.document_store.update(|document| {
+            let mut profiles = profiles_from_document(document);
+            if let Some(index) = profiles
+                .iter()
+                .position(|item| item.project_id == profile.project_id && item.id == profile.id)
+            {
+                profiles[index] = profile;
+            } else {
+                profiles.push(profile);
+            }
+            *document = serde_json::to_value(&profiles).map_err(|error| error.to_string())?;
+            Ok(profiles)
+        })?;
+        Ok(snapshot_from_profiles(profiles, Some(&project_id)))
     }
 
     pub fn delete(
@@ -90,14 +77,14 @@ impl DBStore {
         project_id: &str,
         profile_id: String,
     ) -> Result<DBProfilesSnapshot, String> {
-        let mut profiles = self
-            .profiles
-            .lock()
-            .map_err(|_| "Database profile store lock poisoned.".to_string())?;
-        profiles.retain(|profile| !(profile.project_id == project_id && profile.id == profile_id));
-        drop(profiles);
-        self.save()?;
-        Ok(self.snapshot(Some(project_id)))
+        let profiles = self.document_store.update(|document| {
+            let mut profiles = profiles_from_document(document);
+            profiles
+                .retain(|profile| !(profile.project_id == project_id && profile.id == profile_id));
+            *document = serde_json::to_value(&profiles).map_err(|error| error.to_string())?;
+            Ok(profiles)
+        })?;
+        Ok(snapshot_from_profiles(profiles, Some(project_id)))
     }
 
     pub fn test_profile(
@@ -115,15 +102,32 @@ impl DBStore {
         let _ = std::fs::remove_file(&profiles_file);
         output
     }
+}
 
-    fn save(&self) -> Result<(), String> {
-        let profiles = self
-            .profiles
-            .lock()
-            .map_err(|_| "Database profile store lock poisoned.".to_string())?
-            .clone();
-        crate::config::ConfigDocumentStore::for_file(self.state_file.clone())
-            .save_snapshot(&profiles)
+fn profiles_from_document(document: &serde_json::Value) -> Vec<DBConnectionProfile> {
+    serde_json::from_value(document.clone()).unwrap_or_default()
+}
+
+fn snapshot_from_profiles(
+    profiles: Vec<DBConnectionProfile>,
+    project_id: Option<&str>,
+) -> DBProfilesSnapshot {
+    let mut profiles = profiles
+        .into_iter()
+        .filter(|profile| {
+            project_id
+                .map(|project_id| profile.project_id == project_id)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    profiles.sort_by(|left, right| {
+        display_name(left)
+            .to_lowercase()
+            .cmp(&display_name(right).to_lowercase())
+    });
+    DBProfilesSnapshot {
+        project_id: project_id.map(str::to_string),
+        profiles,
     }
 }
 

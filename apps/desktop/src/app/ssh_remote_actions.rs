@@ -81,19 +81,12 @@ impl CoduxApp {
             self.invalidate_status_bar(cx);
             applied += 1;
         }
-        if event.project_revision > self.child_window_project_seen_revision {
-            self.child_window_project_seen_revision = event.project_revision;
-            let next = self.runtime_service.reload_state();
-            self.apply_project_list_state(next, cx);
-            self.reload_project_open_applications_async(cx);
-            self.normalize_selected_git_branch();
-            self.normalize_selected_ai_session();
-            self.normalize_selected_runtime_session();
-            self.normalize_selected_ssh_profile();
+        if event.database_revision > self.child_window_database_seen_revision {
+            self.child_window_database_seen_revision = event.database_revision;
+            // Database editor saves only affect connection profiles, so avoid the project-wide reload.
             self.reload_selected_project_db();
             self.normalize_selected_db_profile();
-            self.invalidate_project_management(cx);
-            self.invalidate_task_column(cx);
+            self.invalidate_db_panel(cx);
             applied += 1;
         }
         if event.worktree_revision > self.child_window_worktree_seen_revision {

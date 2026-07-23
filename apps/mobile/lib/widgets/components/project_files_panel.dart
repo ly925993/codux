@@ -839,8 +839,10 @@ class FileEditorView extends StatelessWidget {
                     showCursor: editing,
                     keyboardType: TextInputType.multiline,
                     textAlignVertical: TextAlignVertical.top,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
+                    // The code canvas stays dark in every app theme, so plain
+                    // text must use a fixed dark-surface foreground as well.
+                    style: const TextStyle(
+                      color: AppColors.terminalText,
                       fontSize: AppTextSize.small,
                       height: 1.42,
                       fontFamily: 'monospace',

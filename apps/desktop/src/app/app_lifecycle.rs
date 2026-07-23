@@ -451,6 +451,8 @@ impl CoduxApp {
             remote_link_paths,
             remote_saved_hosts,
             remote_saved_host_ids,
+            agent_prompt_queues: AgentPromptQueueStore::default(),
+            agent_prompt_queue_view: None,
             project_column_view: None,
             task_column_view: None,
             task_column_header_view: None,

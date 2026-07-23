@@ -1,6 +1,9 @@
 use crate::{
     heroicons::HeroIconName,
-    terminal::{TerminalConfig, TerminalLaunchContext, TerminalPane, TerminalView},
+    terminal::{
+        TerminalAgentDraftSubmission, TerminalAgentPromptDisposition, TerminalConfig,
+        TerminalLaunchContext, TerminalPane, TerminalView,
+    },
     theme::{self, color},
 };
 use anyhow::Result;
@@ -94,6 +97,7 @@ use std::{
 mod about;
 mod agent_display;
 mod agent_lifecycle;
+mod agent_prompt_queue;
 mod ai_history_mapping;
 mod ai_memory_actions;
 mod ai_runtime_status;
@@ -170,6 +174,7 @@ pub(crate) const TASK_COLUMN_FIXED_WIDTH: f32 = 240.0;
 pub(crate) const ASSISTANT_PANEL_WIDTH: f32 = 320.0;
 
 use self::{
+    agent_prompt_queue::{AgentPromptQueueStore, AgentPromptQueueView},
     ai_history_mapping::{
         AI_SESSION_FORK_TARGETS, ai_history_should_replace, ai_history_summary_from_project_state,
         ai_history_summary_from_state_or_status, ai_history_worktree_request,

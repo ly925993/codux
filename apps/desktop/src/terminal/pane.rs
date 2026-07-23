@@ -4,6 +4,19 @@ pub struct TerminalPane {
     session: TerminalSessionBinding,
 }
 
+#[derive(Default)]
+struct TerminalDeferredInput {
+    writes: VecDeque<Vec<u8>>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct TerminalInputGate {
+    dispatching_agent_prompt: AtomicBool,
+    order: Mutex<()>,
+    deferred: Mutex<TerminalDeferredInput>,
+}
+
 #[derive(Clone)]
 pub struct HostedTerminalCloseTarget {
     controller: Arc<dyn RuntimeTerminalController>,
@@ -346,6 +359,22 @@ impl TerminalPane {
         self.session.write(text.as_bytes())
     }
 
+    /// Submit one logical prompt without holding the GPUI thread on a large
+    /// PTY write. Bracketed paste prevents embedded newlines from being
+    /// interpreted as premature submissions by supported Agent TUIs.
+    pub fn send_agent_prompt(&self, text: &str) -> Result<()> {
+        let framed = frame_agent_prompt(text);
+        self.session.write_reserved_agent_prompt(&framed)
+    }
+
+    pub fn try_reserve_agent_prompt_dispatch(&self) -> bool {
+        self.session.try_reserve_agent_prompt_dispatch()
+    }
+
+    pub fn cancel_agent_prompt_dispatch(&self) {
+        self.session.cancel_agent_prompt_dispatch();
+    }
+
     pub fn input_snapshot(&self) -> TerminalInputSnapshot {
         self.session.input_snapshot()
     }
@@ -383,6 +412,16 @@ impl TerminalPane {
     pub fn hosted_close_target(&self) -> Option<HostedTerminalCloseTarget> {
         self.session.hosted_close_target()
     }
+}
+
+/// Frame queued text as one bracketed paste followed by one explicit submit.
+/// Keeping the protocol in a pure helper makes its exact byte order testable.
+fn frame_agent_prompt(text: &str) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(text.len() + 13);
+    framed.extend_from_slice(b"\x1b[200~");
+    framed.extend_from_slice(text.as_bytes());
+    framed.extend_from_slice(b"\x1b[201~\r");
+    framed
 }
 
 pub struct PendingTerminalAttach {
@@ -457,6 +496,7 @@ impl Write for TerminalSessionWriter {
 #[derive(Clone)]
 struct TerminalSessionBinding {
     inner: Arc<Mutex<TerminalSessionBindingInner>>,
+    input_gate: Arc<TerminalInputGate>,
 }
 
 /// A hosted terminal: input/resize go to its runtime over the controller;
@@ -604,6 +644,7 @@ impl TerminalSessionBinding {
                     last_resize: None,
                     initial_layout_tx: Some(initial_layout_tx),
                 })),
+                input_gate: Arc::new(TerminalInputGate::default()),
             },
             initial_layout_rx,
         )
@@ -620,6 +661,7 @@ impl TerminalSessionBinding {
                 last_resize: None,
                 initial_layout_tx: None,
             })),
+            input_gate: Arc::new(TerminalInputGate::default()),
         }
     }
 
@@ -852,14 +894,28 @@ impl TerminalSessionBinding {
     }
 
     fn write(&self, bytes: &[u8]) -> Result<()> {
+        if self.defer_input_during_agent_dispatch(bytes)? {
+            return Ok(());
+        }
+        let _order = self.input_gate.order.lock();
+        if self.defer_input_during_agent_dispatch(bytes)? {
+            return Ok(());
+        }
+        self.write_direct(bytes)
+    }
+
+    fn write_direct(&self, bytes: &[u8]) -> Result<()> {
         let hosted = {
             let inner = self.inner.lock();
             inner.hosted.clone()
         };
         if let Some(hosted) = hosted {
-            hosted
+            if !hosted
                 .controller
-                .terminal_input(&hosted.session_id, bytes);
+                .terminal_input(&hosted.session_id, bytes)
+            {
+                return Err(anyhow::anyhow!("hosted terminal rejected input"));
+            }
             return Ok(());
         }
         if let Some(session) = self.inner.lock().session.clone() {
@@ -868,11 +924,101 @@ impl TerminalSessionBinding {
         const MAX_PENDING_WRITE_BYTES: usize = 64 * 1024;
         let mut inner = self.inner.lock();
         if inner.pending_write_bytes + bytes.len() > MAX_PENDING_WRITE_BYTES {
-            return Ok(());
+            return Err(anyhow::anyhow!("terminal input buffer is full"));
         }
         inner.pending_write_bytes += bytes.len();
         inner.pending_writes.push_back(bytes.to_vec());
         Ok(())
+    }
+
+    fn try_reserve_agent_prompt_dispatch(&self) -> bool {
+        let _order = self.input_gate.order.lock();
+        self.input_gate
+            .dispatching_agent_prompt
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn cancel_agent_prompt_dispatch(&self) {
+        if !self
+            .input_gate
+            .dispatching_agent_prompt
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        self.flush_deferred_input();
+    }
+
+    fn write_reserved_agent_prompt(&self, framed: &[u8]) -> Result<()> {
+        let _order = self.input_gate.order.lock();
+        if !self
+            .input_gate
+            .dispatching_agent_prompt
+            .load(Ordering::Acquire)
+        {
+            return Err(anyhow::anyhow!("Agent prompt dispatch was not reserved"));
+        }
+
+        let prompt_result = self.write_direct(framed);
+        let deferred_result = self.flush_deferred_input_locked();
+        prompt_result.and(deferred_result)
+    }
+
+    fn defer_input_during_agent_dispatch(&self, bytes: &[u8]) -> Result<bool> {
+        if !self
+            .input_gate
+            .dispatching_agent_prompt
+            .load(Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let mut deferred = self.input_gate.deferred.lock();
+        if !self
+            .input_gate
+            .dispatching_agent_prompt
+            .load(Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        const MAX_DEFERRED_INPUT_BYTES: usize = 256 * 1024;
+        if deferred.bytes.saturating_add(bytes.len()) > MAX_DEFERRED_INPUT_BYTES {
+            return Err(anyhow::anyhow!("deferred terminal input buffer is full"));
+        }
+        deferred.bytes += bytes.len();
+        deferred.writes.push_back(bytes.to_vec());
+        Ok(true)
+    }
+
+    fn flush_deferred_input(&self) {
+        let _order = self.input_gate.order.lock();
+        let _ = self.flush_deferred_input_locked();
+    }
+
+    fn flush_deferred_input_locked(&self) -> Result<()> {
+        let mut first_error = None;
+        loop {
+            let writes = {
+                let mut deferred = self.input_gate.deferred.lock();
+                if deferred.writes.is_empty() {
+                    deferred.bytes = 0;
+                    self.input_gate
+                        .dispatching_agent_prompt
+                        .store(false, Ordering::Release);
+                    break;
+                }
+                deferred.bytes = 0;
+                std::mem::take(&mut deferred.writes)
+            };
+            for bytes in writes {
+                if let Err(error) = self.write_direct(&bytes)
+                    && first_error.is_none()
+                {
+                    first_error = Some(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {

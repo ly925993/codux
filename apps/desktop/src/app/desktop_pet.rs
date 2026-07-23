@@ -1150,12 +1150,14 @@ mod tests {
     fn runtime_session(state: &str) -> codux_runtime::ai_runtime_state::AIRuntimeSessionSummary {
         codux_runtime::ai_runtime_state::AIRuntimeSessionSummary {
             terminal_id: "term-a".to_string(),
+            terminal_instance_id: None,
             project_id: "project-a".to_string(),
             project_path: None,
             tool: "codex".to_string(),
             ai_session_id: None,
             model: None,
             state: state.to_string(),
+            runtime_state: state.to_string(),
             project_name: "Codux".to_string(),
             session_title: "Session".to_string(),
             started_at: Some(1.0),

@@ -1,16 +1,30 @@
 use super::super::*;
 
-#[derive(Default)]
 struct HostedTestController {
     actions: std::sync::Mutex<Vec<String>>,
+    inputs: std::sync::Mutex<Vec<Vec<u8>>>,
     terminals: Vec<String>,
+    accept_input: bool,
+}
+
+impl Default for HostedTestController {
+    fn default() -> Self {
+        Self {
+            actions: std::sync::Mutex::new(Vec::new()),
+            inputs: std::sync::Mutex::new(Vec::new()),
+            terminals: Vec::new(),
+            accept_input: true,
+        }
+    }
 }
 
 impl HostedTestController {
     fn with_terminals(terminals: &[&str]) -> Self {
         Self {
             actions: std::sync::Mutex::new(Vec::new()),
+            inputs: std::sync::Mutex::new(Vec::new()),
             terminals: terminals.iter().map(|value| value.to_string()).collect(),
+            accept_input: true,
         }
     }
 
@@ -40,8 +54,9 @@ impl RuntimeTerminalController for HostedTestController {
         }))
     }
 
-    fn terminal_input(&self, _session_id: &str, _bytes: &[u8]) -> bool {
-        true
+    fn terminal_input(&self, _session_id: &str, bytes: &[u8]) -> bool {
+        self.inputs.lock().unwrap().push(bytes.to_vec());
+        self.accept_input
     }
 
     fn terminal_resize(&self, _session_id: &str, _cols: u16, _rows: u16) -> bool {
@@ -211,4 +226,65 @@ fn reconnect_event_clears_terminal_failure_state() {
     assert!(model.apply_ui_event(TerminalUiEvent::Reconnected));
     assert!(!model.exited);
     assert!(model.title.is_none());
+}
+
+#[test]
+fn reserved_agent_prompt_precedes_input_typed_during_dispatch() {
+    let controller = Arc::new(HostedTestController::default());
+    let config = TerminalPtyConfig {
+        terminal_id: Some("terminal-1".to_string()),
+        ..Default::default()
+    };
+    let (binding, _initial_layout_rx) = TerminalSessionBinding::pending(config.clone());
+    binding.attach_hosted(
+        controller.clone(),
+        "terminal-1".to_string(),
+        flume::unbounded().0,
+        flume::unbounded().0,
+        flume::unbounded().0,
+        config,
+    );
+
+    assert!(binding.try_reserve_agent_prompt_dispatch());
+    binding.write(b"new draft").unwrap();
+    binding
+        .write_reserved_agent_prompt(b"queued prompt")
+        .unwrap();
+
+    assert_eq!(
+        *controller.inputs.lock().unwrap(),
+        [b"queued prompt".to_vec(), b"new draft".to_vec()]
+    );
+}
+
+#[test]
+fn queued_agent_prompt_is_one_bracketed_paste_followed_by_enter() {
+    assert_eq!(
+        frame_agent_prompt("first line\nsecond line"),
+        b"\x1b[200~first line\nsecond line\x1b[201~\r"
+    );
+}
+
+#[test]
+fn hosted_input_rejection_is_reported_to_queue_dispatch() {
+    let controller = Arc::new(HostedTestController {
+        accept_input: false,
+        ..Default::default()
+    });
+    let config = TerminalPtyConfig {
+        terminal_id: Some("terminal-1".to_string()),
+        ..Default::default()
+    };
+    let (binding, _initial_layout_rx) = TerminalSessionBinding::pending(config.clone());
+    binding.attach_hosted(
+        controller,
+        "terminal-1".to_string(),
+        flume::unbounded().0,
+        flume::unbounded().0,
+        flume::unbounded().0,
+        config,
+    );
+
+    assert!(binding.try_reserve_agent_prompt_dispatch());
+    assert!(binding.write_reserved_agent_prompt(b"prompt").is_err());
 }

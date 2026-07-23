@@ -2,6 +2,8 @@ type TerminalFocusObserver = Arc<dyn Fn(&mut Window, &mut Context<TerminalView>)
 type TerminalTitleObserver = Arc<dyn Fn(Option<String>, &mut Context<TerminalView>)>;
 type TerminalSearchObserver = Arc<dyn Fn(bool, &mut Context<TerminalView>)>;
 type TerminalLinkOpener = Arc<dyn Fn(String, &mut Window, &mut Context<TerminalView>)>;
+type TerminalAgentPromptObserver =
+    Arc<dyn Fn(TerminalAgentDraftSubmission, &mut Context<TerminalView>) -> TerminalAgentPromptDisposition>;
 
 pub struct TerminalView {
     model: Entity<TerminalModel>,
@@ -16,6 +18,8 @@ pub struct TerminalView {
     marked_text: Option<TerminalMarkedText>,
     hover_link: Option<TerminalLink>,
     suppressed_text_input: Option<TerminalSuppressedTextInput>,
+    agent_draft: TerminalAgentDraft,
+    agent_prompt_observer: Option<TerminalAgentPromptObserver>,
     scroll_input: TerminalScrollInputState,
     selection_frame_pending: bool,
     // A generation token cancels stale debounce and background extraction tasks.
@@ -238,6 +242,8 @@ impl TerminalView {
             marked_text: None,
             hover_link: None,
             suppressed_text_input: None,
+            agent_draft: TerminalAgentDraft::new(),
+            agent_prompt_observer: None,
             scroll_input: TerminalScrollInputState::default(),
             selection_frame_pending: false,
             selection_copy_generation: 0,
@@ -397,6 +403,19 @@ impl TerminalView {
         F: Fn(bool, &mut Context<TerminalView>) + 'static,
     {
         self.search_observer = Some(Arc::new(observer));
+    }
+
+    pub fn set_agent_prompt_observer<F>(&mut self, observer: F)
+    where
+        F: Fn(TerminalAgentDraftSubmission, &mut Context<TerminalView>)
+                -> TerminalAgentPromptDisposition
+            + 'static,
+    {
+        self.agent_prompt_observer = Some(Arc::new(observer));
+    }
+
+    pub fn agent_composer_available_for_dispatch(&self) -> bool {
+        self.agent_draft.is_empty_and_reliable()
     }
 
     pub fn search_is_open(&self) -> bool {
@@ -702,6 +721,27 @@ impl TerminalView {
         let Some(bytes) = keystroke_to_bytes(keystroke, mode) else {
             return false;
         };
+        if terminal_plain_enter(keystroke) {
+            if let Some(prompt) = self.agent_draft.submission()
+                && let Some(observer) = self.agent_prompt_observer.clone()
+            {
+                match observer(prompt, cx) {
+                    TerminalAgentPromptDisposition::Queued => {
+                        self.agent_draft.clear();
+                        // Ctrl+U is handled by supported Agent composers as a
+                        // constant-time draft clear and does not interrupt the
+                        // currently running turn like Ctrl+C would.
+                        self.write_bytes(b"\x15", cx);
+                        return true;
+                    }
+                    TerminalAgentPromptDisposition::Rejected => return true,
+                    TerminalAgentPromptDisposition::PassThrough => {}
+                }
+            }
+            self.agent_draft.clear();
+        } else {
+            self.agent_draft.record_keystroke(keystroke, &bytes);
+        }
         self.prepare_local_viewport_for_input(cx);
         self.blink_manager
             .update(cx, TerminalBlinkManager::pause_blinking);
@@ -749,6 +789,7 @@ impl TerminalView {
         // A normal right-click must never reuse a path captured by an earlier gesture.
         self.context_menu_path = None;
         if event.button == MouseButton::Left {
+            self.agent_draft.mark_unreliable();
             // Any new left-button gesture supersedes a pending automatic copy.
             self.invalidate_pending_selection_copy();
         }
@@ -1250,6 +1291,7 @@ impl TerminalView {
     }
 
     fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.agent_draft.record_text(text);
         self.prepare_local_viewport_for_input(cx);
         self.blink_manager
             .update(cx, TerminalBlinkManager::pause_blinking);

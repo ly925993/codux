@@ -21,6 +21,7 @@ pub(in crate::app) struct TaskColumnView {
     worktree_list_view: gpui::Entity<TaskWorktreeListView>,
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
+    agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
     sessions_collapsed: bool,
 }
 
@@ -78,6 +79,7 @@ impl Render for TaskColumnView {
             self.worktree_list_view.clone(),
             self.terminal_list_view.clone(),
             self.session_list_view.clone(),
+            self.agent_prompt_queue_view.clone(),
             self.sessions_collapsed,
         )
         .into_any_element()
@@ -87,11 +89,13 @@ impl Render for TaskColumnView {
 impl CoduxApp {
     pub(in crate::app) fn task_column_view(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Entity<TaskColumnView> {
         let sessions_collapsed = self.task_section_sessions_collapsed;
         if let Some(view) = self.task_column_view.clone() {
             self.update_task_column_child_views(cx);
+            let _ = self.agent_prompt_queue_view(window, cx);
             view.update(cx, |view, cx| {
                 if view.sessions_collapsed != sessions_collapsed {
                     view.sessions_collapsed = sessions_collapsed;
@@ -104,11 +108,13 @@ impl CoduxApp {
         let worktree_list_view = self.task_worktree_list_view(cx);
         let terminal_list_view = self.task_terminal_list_view(cx);
         let session_list_view = self.task_session_list_view(cx);
+        let agent_prompt_queue_view = self.agent_prompt_queue_view(window, cx);
         let view = cx.new(|_| TaskColumnView {
             header_view,
             worktree_list_view,
             terminal_list_view,
             session_list_view,
+            agent_prompt_queue_view,
             sessions_collapsed,
         });
         self.task_column_view = Some(view.clone());
@@ -120,6 +126,7 @@ impl CoduxApp {
         let _ = self.task_worktree_list_view(cx);
         let _ = self.task_terminal_list_view(cx);
         let _ = self.task_session_list_view(cx);
+        self.refresh_agent_prompt_queue_view(cx);
     }
 }
 
@@ -562,6 +569,7 @@ fn task_column_content(
     worktree_list_view: gpui::Entity<TaskWorktreeListView>,
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
+    agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
     sessions_collapsed: bool,
 ) -> impl IntoElement {
     div()
@@ -601,7 +609,8 @@ fn task_column_content(
                         .when(sessions_collapsed, |this| this.flex_none())
                         .when(!sessions_collapsed, |this| this.flex_1())
                         .child(gpui::AnyView::from(session_list_view)),
-                ),
+                )
+                .child(gpui::AnyView::from(agent_prompt_queue_view)),
         )
 }
 
@@ -1126,7 +1135,7 @@ fn session_section_heading(
         .justify_between()
         .cursor_pointer()
         .hover(|style| style.bg(theme::elevate(color(theme::BG_COLUMN), 0.05)))
-        .on_click(move |_, _window, cx| {
+        .on_click(move |_, window, cx| {
             cx.update_entity(&app_entity, |app, cx| {
                 match section {
                     TaskSectionKind::Terminals => {
@@ -1138,7 +1147,7 @@ fn session_section_heading(
                     }
                 }
                 // Getter (not just child refresh) syncs the collapsed flag into the view and notifies it, so the docked flex re-renders now.
-                let _ = app.task_column_view(cx);
+                let _ = app.task_column_view(window, cx);
             });
         })
         .child(

@@ -155,12 +155,14 @@ fn stats_view_filters_current_sessions_by_selected_worktree_scope() {
 fn runtime_session(terminal_id: &str) -> AIRuntimeSessionSummary {
     AIRuntimeSessionSummary {
         terminal_id: terminal_id.to_string(),
+        terminal_instance_id: None,
         project_id: String::new(),
         project_path: None,
         tool: String::new(),
         ai_session_id: None,
         model: None,
         state: "running".to_string(),
+        runtime_state: "responding".to_string(),
         project_name: "Project".to_string(),
         session_title: "Session".to_string(),
         started_at: None,

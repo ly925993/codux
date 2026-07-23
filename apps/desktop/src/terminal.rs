@@ -44,7 +44,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, LazyLock, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -73,6 +73,7 @@ fn terminal_native_control_modifier_pressed() -> bool {
 
 include!("terminal/pane.rs");
 include!("terminal/config.rs");
+include!("terminal/agent_draft.rs");
 include!("terminal/view.rs");
 include!("terminal/protocol.rs");
 include!("terminal/render.rs");

@@ -63,6 +63,8 @@ pub struct AIRuntimeProjectTotalsSummary {
 pub struct AIRuntimeSessionSummary {
     pub terminal_id: String,
     #[serde(default)]
+    pub terminal_instance_id: Option<String>,
+    #[serde(default)]
     pub project_id: String,
     #[serde(default)]
     pub project_path: Option<String>,
@@ -72,6 +74,10 @@ pub struct AIRuntimeSessionSummary {
     #[serde(default)]
     pub model: Option<String>,
     pub state: String,
+    /// Raw supervisor state is kept separately because `state` is a presentation
+    /// lifecycle that remains `completed` after a turn has finished.
+    #[serde(default)]
+    pub runtime_state: String,
     pub project_name: String,
     pub session_title: String,
     #[serde(default)]
@@ -451,12 +457,14 @@ fn raw_sessions(raw: &Map<String, Value>) -> Vec<AIRuntimeSessionSummary> {
 fn session_from_runtime_snapshot(session: &AISessionSnapshot) -> AIRuntimeSessionSummary {
     AIRuntimeSessionSummary {
         terminal_id: session.terminal_id.clone(),
+        terminal_instance_id: session.terminal_instance_id.clone(),
         project_id: session.project_id.clone(),
         project_path: session.project_path.clone(),
         tool: session.tool.clone(),
         ai_session_id: session.ai_session_id.clone(),
         model: session.model.clone(),
         state: runtime_snapshot_session_state(session).to_string(),
+        runtime_state: session.state.clone(),
         project_name: session.project_name.clone(),
         session_title: session.session_title.clone(),
         started_at: session.started_at,
@@ -573,7 +581,7 @@ mod tests {
             sessions: vec![
                 AISessionSnapshot {
                     terminal_id: "term-a".to_string(),
-                    terminal_instance_id: None,
+                    terminal_instance_id: Some("instance-a".to_string()),
                     project_id: "project-a".to_string(),
                     project_name: "Codux".to_string(),
                     project_path: None,
@@ -685,6 +693,11 @@ mod tests {
         assert_eq!(summary.sessions[0].terminal_id, "term-b");
         assert_eq!(summary.sessions[0].state, "needs-input");
         assert_eq!(summary.sessions[1].state, "running");
+        assert_eq!(summary.sessions[1].runtime_state, "responding");
+        assert_eq!(
+            summary.sessions[1].terminal_instance_id.as_deref(),
+            Some("instance-a")
+        );
         assert_eq!(summary.sessions[1].project_id, "project-a");
         assert_eq!(
             summary.sessions[1].ai_session_id.as_deref(),

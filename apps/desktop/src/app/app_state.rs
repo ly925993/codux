@@ -445,6 +445,10 @@ pub struct CoduxApp {
     /// `saved_remote_hosts()` is a disk read and must not run per render; a link
     /// state is transient runtime data and undercounts hosts not yet reached.
     pub(in crate::app) remote_saved_host_ids: Vec<String>,
+    /// In-memory, per-Agent queues avoid disk work on the UI thread and keep
+    /// terminal/session identity attached to every pending prompt.
+    pub(in crate::app) agent_prompt_queues: AgentPromptQueueStore,
+    pub(in crate::app) agent_prompt_queue_view: Option<gpui::Entity<AgentPromptQueueView>>,
     pub(in crate::app) project_column_view: Option<gpui::Entity<ProjectColumnView>>,
     pub(in crate::app) task_column_view: Option<gpui::Entity<TaskColumnView>>,
     pub(in crate::app) task_column_header_view: Option<gpui::Entity<TaskColumnHeaderView>>,

@@ -328,7 +328,8 @@ impl CoduxApp {
         self.terminal_pane_registry.remove(terminal_id);
         self.terminal_osc_titles.remove(terminal_id);
         self.terminal_search_open.remove(terminal_id);
-        self.clear_pane_agent_lifecycle(terminal_id)
+        let queue_removed = self.agent_prompt_queues.remove_terminal(terminal_id);
+        self.clear_pane_agent_lifecycle(terminal_id) || queue_removed
     }
 
     pub(in crate::app) fn register_terminal_pane(
@@ -344,10 +345,13 @@ impl CoduxApp {
         let app_for_link = app.clone();
         let app_for_title = app.clone();
         let app_for_search = app.clone();
+        let app_for_prompt = app.clone();
         let terminal_id = terminal_id.to_string();
         let observer_terminal_id = terminal_id.clone();
         let title_terminal_id = terminal_id.clone();
         let search_terminal_id = terminal_id.clone();
+        let prompt_terminal_id = terminal_id.clone();
+        let prompt_terminal_instance_id = pane.terminal_instance_id();
         pane.view.update(cx, |terminal, _| {
             terminal.set_focus_observer(move |_window, cx| {
                 let terminal_id = observer_terminal_id.clone();
@@ -378,6 +382,30 @@ impl CoduxApp {
                 let _ = app_for_link.update(cx, |app, cx| {
                     app.open_terminal_web_link(url, cx);
                 });
+            });
+            terminal.set_agent_prompt_observer(move |prompt, cx| {
+                let Some(terminal_instance_id) = prompt_terminal_instance_id.as_deref() else {
+                    return TerminalAgentPromptDisposition::PassThrough;
+                };
+                let disposition = app_for_prompt
+                    .update(cx, |app, cx| {
+                        app.route_terminal_agent_prompt(
+                            &prompt_terminal_id,
+                            terminal_instance_id,
+                            prompt,
+                            cx,
+                        )
+                    })
+                    .unwrap_or(TerminalAgentPromptDisposition::PassThrough);
+                if disposition == TerminalAgentPromptDisposition::Queued {
+                    let app = app_for_prompt.clone();
+                    // The view clears the Agent composer before this deferred
+                    // pump can write the current queue head into the same PTY.
+                    cx.defer(move |cx| {
+                        let _ = app.update(cx, |app, cx| app.pump_agent_prompt_queues(cx));
+                    });
+                }
+                disposition
             });
         });
         // Seed from the view's cached title: registration may follow output

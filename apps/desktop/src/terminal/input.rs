@@ -30,6 +30,7 @@ impl TerminalInputHandler {
             return;
         }
         let _ = self.terminal_view.update(cx, |view, cx| {
+            view.agent_draft.record_text(text);
             view.prepare_local_viewport_for_input(cx);
         });
         self.model.update(cx, |model, cx| {

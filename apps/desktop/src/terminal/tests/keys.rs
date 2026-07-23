@@ -12,6 +12,16 @@ fn maps_plain_text_and_basic_control_keys() {
     assert_eq!(bytes(keystroke("Esc"), normal_mode()), b"\x1b");
     assert_eq!(bytes(keystroke("backspace"), normal_mode()), b"\x7f");
 }
+
+#[test]
+fn agent_queue_plain_enter_matches_all_terminal_enter_aliases() {
+    for key in ["enter", "Return", "kp_enter", "numpadenter", "numpad_enter"] {
+        assert!(terminal_plain_enter(&keystroke(key)), "missing alias {key}");
+    }
+    assert!(!terminal_plain_enter(&modified_key(
+        "enter", true, false, false, false
+    )));
+}
 #[test]
 fn plain_character_without_text_input_is_not_lowercased() {
     assert!(keystroke_to_bytes(&keystroke("a"), normal_mode()).is_none());

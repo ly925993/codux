@@ -25,6 +25,16 @@ fn is_select_all_keystroke(keystroke: &Keystroke) -> bool {
         && !modifiers.shift
 }
 
+fn terminal_plain_enter(keystroke: &Keystroke) -> bool {
+    let modifiers = &keystroke.modifiers;
+    terminal_agent_normalize_key(&keystroke.key) == "enter"
+        && !modifiers.shift
+        && !modifiers.alt
+        && !modifiers.control
+        && !modifiers.platform
+        && !modifiers.function
+}
+
 /// cmd+up / cmd+down navigate OSC 133 prompt marks.
 fn prompt_jump_direction(keystroke: &Keystroke) -> Option<i32> {
     let modifiers = &keystroke.modifiers;

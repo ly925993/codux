@@ -16,12 +16,18 @@ enum TaskSectionKind {
     Sessions,
 }
 
+const WORKTREE_EMPTY_HEIGHT: f32 = 96.0;
+const WORKTREE_VERTICAL_PADDING: f32 = 24.0;
+const WORKTREE_ROW_HEIGHT: f32 = 60.0;
+const MAX_VISIBLE_WORKTREE_ROWS: usize = 4;
+
 pub(in crate::app) struct TaskColumnView {
     header_view: gpui::Entity<TaskColumnHeaderView>,
     worktree_list_view: gpui::Entity<TaskWorktreeListView>,
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
     agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
+    worktree_count: usize,
     sessions_collapsed: bool,
 }
 
@@ -80,6 +86,7 @@ impl Render for TaskColumnView {
             self.terminal_list_view.clone(),
             self.session_list_view.clone(),
             self.agent_prompt_queue_view.clone(),
+            self.worktree_count,
             self.sessions_collapsed,
         )
         .into_any_element()
@@ -93,12 +100,16 @@ impl CoduxApp {
         cx: &mut Context<Self>,
     ) -> gpui::Entity<TaskColumnView> {
         let sessions_collapsed = self.task_section_sessions_collapsed;
+        let worktree_count = self.state.worktrees.worktrees.len();
         if let Some(view) = self.task_column_view.clone() {
             self.update_task_column_child_views(cx);
             let _ = self.agent_prompt_queue_view(window, cx);
             view.update(cx, |view, cx| {
-                if view.sessions_collapsed != sessions_collapsed {
+                if view.sessions_collapsed != sessions_collapsed
+                    || view.worktree_count != worktree_count
+                {
                     view.sessions_collapsed = sessions_collapsed;
+                    view.worktree_count = worktree_count;
                     cx.notify();
                 }
             });
@@ -115,6 +126,7 @@ impl CoduxApp {
             terminal_list_view,
             session_list_view,
             agent_prompt_queue_view,
+            worktree_count,
             sessions_collapsed,
         });
         self.task_column_view = Some(view.clone());
@@ -570,8 +582,10 @@ fn task_column_content(
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
     agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
+    worktree_count: usize,
     sessions_collapsed: bool,
 ) -> impl IntoElement {
+    let worktree_height = task_worktree_section_height(worktree_count);
     div()
         .flex()
         .flex_col()
@@ -590,7 +604,11 @@ fn task_column_content(
                 .flex_col()
                 .child(
                     div()
-                        .flex_1()
+                        // Worktrees are a compact navigation list. Giving it a
+                        // row-bounded height keeps terminals, sessions, and the
+                        // send queue visible even when only one branch exists.
+                        .flex_none()
+                        .h(px(worktree_height))
                         .min_h_0()
                         .overflow_hidden()
                         .child(gpui::AnyView::from(worktree_list_view)),
@@ -612,6 +630,11 @@ fn task_column_content(
                 )
                 .child(gpui::AnyView::from(agent_prompt_queue_view)),
         )
+}
+
+fn task_worktree_section_height(worktree_count: usize) -> f32 {
+    let visible_rows = worktree_count.min(MAX_VISIBLE_WORKTREE_ROWS) as f32;
+    (WORKTREE_VERTICAL_PADDING + visible_rows * WORKTREE_ROW_HEIGHT).max(WORKTREE_EMPTY_HEIGHT)
 }
 
 fn task_column_header(
@@ -1545,5 +1568,14 @@ mod tests {
         let body = task_column_surface(color(theme::BG_COLUMN));
 
         assert_eq!(header.a, body.a);
+    }
+
+    #[test]
+    fn worktree_section_stays_compact_and_caps_visible_rows() {
+        assert_eq!(task_worktree_section_height(0), 96.0);
+        assert_eq!(task_worktree_section_height(1), 96.0);
+        assert_eq!(task_worktree_section_height(2), 144.0);
+        assert_eq!(task_worktree_section_height(4), 264.0);
+        assert_eq!(task_worktree_section_height(20), 264.0);
     }
 }

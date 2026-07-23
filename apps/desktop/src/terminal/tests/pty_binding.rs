@@ -253,15 +253,19 @@ fn reserved_agent_prompt_precedes_input_typed_during_dispatch() {
 
     assert_eq!(
         *controller.inputs.lock().unwrap(),
-        [b"queued prompt".to_vec(), b"new draft".to_vec()]
+        [
+            b"queued prompt".to_vec(),
+            b"\r".to_vec(),
+            b"new draft".to_vec()
+        ]
     );
 }
 
 #[test]
-fn queued_agent_prompt_is_one_bracketed_paste_followed_by_enter() {
+fn queued_agent_prompt_keeps_submit_outside_the_bracketed_paste_write() {
     assert_eq!(
         frame_agent_prompt("first line\nsecond line"),
-        b"\x1b[200~first line\nsecond line\x1b[201~\r"
+        b"\x1b[200~first line\nsecond line\x1b[201~"
     );
 }
 
@@ -277,7 +281,7 @@ fn hosted_input_rejection_is_reported_to_queue_dispatch() {
     };
     let (binding, _initial_layout_rx) = TerminalSessionBinding::pending(config.clone());
     binding.attach_hosted(
-        controller,
+        controller.clone(),
         "terminal-1".to_string(),
         flume::unbounded().0,
         flume::unbounded().0,
@@ -287,4 +291,5 @@ fn hosted_input_rejection_is_reported_to_queue_dispatch() {
 
     assert!(binding.try_reserve_agent_prompt_dispatch());
     assert!(binding.write_reserved_agent_prompt(b"prompt").is_err());
+    assert_eq!(*controller.inputs.lock().unwrap(), [b"prompt".to_vec()]);
 }

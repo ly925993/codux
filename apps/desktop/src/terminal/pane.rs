@@ -414,13 +414,13 @@ impl TerminalPane {
     }
 }
 
-/// Frame queued text as one bracketed paste followed by one explicit submit.
-/// Keeping the protocol in a pure helper makes its exact byte order testable.
+/// Frame queued text as one bracketed paste. The submit key is deliberately
+/// sent in a later PTY write so Agent TUIs can finish processing paste mode.
 fn frame_agent_prompt(text: &str) -> Vec<u8> {
-    let mut framed = Vec::with_capacity(text.len() + 13);
+    let mut framed = Vec::with_capacity(text.len() + 12);
     framed.extend_from_slice(b"\x1b[200~");
     framed.extend_from_slice(text.as_bytes());
-    framed.extend_from_slice(b"\x1b[201~\r");
+    framed.extend_from_slice(b"\x1b[201~");
     framed
 }
 
@@ -961,8 +961,18 @@ impl TerminalSessionBinding {
         }
 
         let prompt_result = self.write_direct(framed);
+        let submit_result = if prompt_result.is_ok() {
+            // Ratatui/readline-style composers may consume a carriage return
+            // that arrives in the same PTY packet as the bracketed paste. This
+            // tiny background-only pause gives the TUI one input turn before
+            // submit while the reservation preserves ordering with user input.
+            std::thread::sleep(Duration::from_millis(8));
+            self.write_direct(b"\r")
+        } else {
+            Ok(())
+        };
         let deferred_result = self.flush_deferred_input_locked();
-        prompt_result.and(deferred_result)
+        prompt_result.and(submit_result).and(deferred_result)
     }
 
     fn defer_input_during_agent_dispatch(&self, bytes: &[u8]) -> Result<bool> {

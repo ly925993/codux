@@ -12,6 +12,9 @@ pub(super) const MAX_AGENT_PROMPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_AGENT_QUEUE_SESSIONS: usize = 32;
 const NATIVE_SUBMISSION_GUARD: Duration = Duration::from_secs(5);
 const AGENT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+const AGENT_QUEUE_VIEWPORT_RATIO: f32 = 0.28;
+const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 160.0;
+const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 360.0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct AgentPromptQueueKey {
@@ -953,8 +956,7 @@ impl Render for AgentPromptQueueView {
             .iter()
             .position(|item| item.status.is_editable())
             .unwrap_or(count);
-        let compact_height = window.viewport_size().height.as_f32() < 760.0;
-        let list_max_height = if compact_height { 96.0 } else { 196.0 };
+        let list_max_height = agent_queue_list_max_height(window.viewport_size().height.as_f32());
         let list_height = (count as f32 * 68.0).min(list_max_height);
         let collapsed = self.collapsed;
         let chevron = if collapsed {
@@ -1096,6 +1098,13 @@ impl Render for AgentPromptQueueView {
             })
             .into_any_element()
     }
+}
+
+fn agent_queue_list_max_height(viewport_height: f32) -> f32 {
+    // Keep enough queued messages visible on short screens while preventing
+    // the queue from crowding out the terminal and session sections.
+    (viewport_height * AGENT_QUEUE_VIEWPORT_RATIO)
+        .clamp(AGENT_QUEUE_MIN_LIST_HEIGHT, AGENT_QUEUE_MAX_LIST_HEIGHT)
 }
 
 fn agent_prompt_queue_row(
@@ -1536,5 +1545,12 @@ mod tests {
             Instant::now() - NATIVE_SUBMISSION_GUARD;
 
         assert!(!store.native_submission_pending(&key()));
+    }
+
+    #[test]
+    fn queue_height_scales_with_viewport_with_stable_bounds() {
+        assert_eq!(agent_queue_list_max_height(480.0), 160.0);
+        assert_eq!(agent_queue_list_max_height(1_000.0), 280.0);
+        assert_eq!(agent_queue_list_max_height(2_000.0), 360.0);
     }
 }

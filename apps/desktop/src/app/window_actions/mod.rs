@@ -21,6 +21,7 @@ pub(in crate::app) enum AuxiliaryWindowSlot {
     WorktreeCreator,
     SshProfileEditor,
     DbProfileEditor,
+    DbProfileShare,
     FilePicker,
 }
 

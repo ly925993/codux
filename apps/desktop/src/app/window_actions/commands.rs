@@ -156,6 +156,75 @@ impl CoduxApp {
         self.open_db_profile_editor(Some(profile_id), cx);
     }
 
+    pub(in crate::app) fn open_selected_db_profile_share(
+        &mut self,
+        profile_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(_project_id) = self
+            .state
+            .selected_project
+            .as_ref()
+            .map(|project| project.id.clone())
+        else {
+            self.status_message = self.db_text(
+                "db.profile.no_project",
+                "Select a project before sharing a database profile",
+            );
+            self.invalidate_db_panel(cx);
+            return;
+        };
+        self.reload_selected_project_db();
+        if Self::activate_child_window(&mut self.db_profile_share_window, cx) {
+            self.status_message = self.db_text(
+                "db.profile.share.already_open",
+                "Database sharing window already opened",
+            );
+            self.invalidate_db_panel(cx);
+            return;
+        }
+        let Some(profile) = self
+            .state
+            .db
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .cloned()
+        else {
+            self.status_message = self.db_text(
+                "db.profile.unavailable",
+                "Database profile is no longer available",
+            );
+            self.invalidate_db_panel(cx);
+            return;
+        };
+        let locale = locale_from_language_setting(&self.state.settings.language);
+        let title = translate(&locale, "db.profile.share_window", "Share Database Profile");
+        self.open_auxiliary_window(
+            AuxiliaryWindowSpec {
+                slot: AuxiliaryWindowSlot::DbProfileShare,
+                title: SharedString::from(title),
+                size: size(px(480.0), px(540.0)),
+                min_size: size(px(420.0), px(360.0)),
+                already_open_message: "Database sharing window already opened",
+                opened_message: "Database sharing window opened",
+                failed_prefix: "failed to open database sharing window",
+            },
+            cx,
+            move |state, runtime, runtime_service, _window, _cx| {
+                // The picker receives a redacted summary, never the stored database password.
+                CoduxApp::new_db_profile_share_window_from_state(
+                    profile,
+                    state,
+                    runtime,
+                    runtime_service,
+                )
+            },
+            |_view, _window, _cx| {},
+        );
+        self.invalidate_db_panel(cx);
+    }
+
     pub(in crate::app) fn open_ssh_profile_editor(
         &mut self,
         profile_id: Option<String>,
@@ -270,8 +339,8 @@ impl CoduxApp {
             AuxiliaryWindowSpec {
                 slot: AuxiliaryWindowSlot::DbProfileEditor,
                 title: SharedString::from(title),
-                size: size(px(520.0), px(520.0)),
-                min_size: size(px(460.0), px(430.0)),
+                size: size(px(540.0), px(700.0)),
+                min_size: size(px(480.0), px(560.0)),
                 already_open_message: "Database profile editor already opened",
                 opened_message: "Database profile editor opened",
                 failed_prefix: "failed to open database profile editor",

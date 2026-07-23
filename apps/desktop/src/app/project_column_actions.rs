@@ -1,6 +1,6 @@
 use super::ai_runtime_status::AgentLifecycleState;
 use super::*;
-use codux_runtime::remote::ControllerLinkState;
+use codux_runtime::remote::{ControllerLinkPath, ControllerLinkState};
 
 impl CoduxApp {
     pub(super) fn selected_project_id(&self) -> Option<String> {
@@ -58,20 +58,51 @@ impl CoduxApp {
     /// to the project badge, and when a host transitions back to Connected,
     /// re-attach that host's terminals so a dropped remote shell recovers.
     pub(super) fn refresh_remote_link_states(&mut self, cx: &mut Context<Self>) {
-        let links = self.runtime_service.remote_controller_link_states();
+        if self.remote_link_refresh_in_flight {
+            return;
+        }
+        self.remote_link_refresh_in_flight = true;
+        let service = self.runtime_service.clone();
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // The host registry is disk-backed and controller snapshots take
+            // locks. Poll them together off the GPUI thread and coalesce ticks.
+            let snapshot = codux_runtime::async_runtime::run_limited_blocking(move || {
+                (
+                    service.remote_controller_link_states(),
+                    service.remote_controller_link_paths(),
+                    service.saved_remote_hosts(),
+                )
+            })
+            .await
+            .ok();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_link_refresh_in_flight = false;
+                if let Some((links, paths, saved_hosts)) = snapshot {
+                    app.apply_remote_link_snapshot(links, paths, saved_hosts, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_remote_link_snapshot(
+        &mut self,
+        links: HashMap<String, ControllerLinkState>,
+        paths: HashMap<String, ControllerLinkPath>,
+        saved_hosts: Vec<codux_runtime::remote::SavedRemoteHost>,
+        cx: &mut Context<Self>,
+    ) {
         // Persistent outbound-host registry (disk-backed) for the status-bar
-        // count. Read here on the slow tick — never from a render path — because
-        // link states are transient runtime data that undercounts saved hosts
-        // not yet reached (and reset to empty on every app restart).
-        let saved_host_ids: Vec<String> = self
-            .runtime_service
-            .saved_remote_hosts()
-            .into_iter()
-            .map(|host| host.device_id)
+        // count. It arrives from the background poll because transient link
+        // states undercount saved hosts not yet reached after app restart.
+        let saved_host_ids: Vec<String> = saved_hosts
+            .iter()
+            .map(|host| host.device_id.clone())
             .collect();
         let links_changed = links != self.remote_link_states;
-        let saved_changed = saved_host_ids != self.remote_saved_host_ids;
-        if !links_changed && !saved_changed {
+        let paths_changed = paths != self.remote_link_paths;
+        let saved_changed = saved_hosts != self.remote_saved_hosts;
+        if !links_changed && !paths_changed && !saved_changed {
             return;
         }
         let reconnected: Vec<String> = if links_changed {
@@ -96,6 +127,8 @@ impl CoduxApp {
             Vec::new()
         };
         self.remote_link_states = links.clone();
+        self.remote_link_paths = paths;
+        self.remote_saved_hosts = saved_hosts;
         self.remote_saved_host_ids = saved_host_ids;
         let state = self.ensure_project_list_state(cx);
         state.update(cx, |state, cx| state.set_links(links, cx));
@@ -103,6 +136,9 @@ impl CoduxApp {
         // The status-bar "N/M" count derives from both the link states and the
         // saved-host registry, so refresh it whenever either changes.
         self.invalidate_status_bar(cx);
+        // Settings consumes only these cached snapshots, so a redraw cannot
+        // block on the host registry file or controller transport locks.
+        self.invalidate_remote_panel(cx);
         // Terminal rebind is NOT edge-triggered here — the slow tick reconciles
         // every remote pane against the pooled controller identity, which also
         // covers reconnects this 1 Hz poll never saw as a Disconnected edge.

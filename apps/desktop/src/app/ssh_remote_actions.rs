@@ -1,4 +1,5 @@
 use super::ai_runtime_status::AgentLifecycleState;
+use super::app_state::RemoteSettingsOperation;
 use super::project_actions::FilePickerOpenRequest;
 use super::*;
 use crate::app::app_events::{
@@ -9,6 +10,11 @@ enum RemoteRelayChange {
     Preset(String),
     RelayUrl(String),
     Authentication(String),
+}
+
+enum RemotePairingDecision {
+    Confirm,
+    Reject,
 }
 
 const AGENT_GIT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -477,24 +483,54 @@ impl CoduxApp {
     }
 
     pub(super) fn toggle_remote_host(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let next = !self.state.remote.enabled;
-        match self.runtime_service.set_remote_enabled(next) {
-            Ok(remote) => {
-                let settings = self.runtime_service.reload_state().settings;
-                self.apply_settings_summary(settings);
-                self.state.remote = remote;
-                self.normalize_selected_remote_device();
-                self.status_message = format!(
-                    "remote host setting saved: {}",
-                    if self.state.remote.enabled {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                );
-            }
-            Err(error) => self.status_message = format!("failed to save remote setting: {error}"),
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
         }
+        let next = !self.state.remote.enabled;
+        let service = self.runtime_service.clone();
+        let started_at = Instant::now();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Toggle);
+        self.status_message = "saving remote host setting".to_string();
+        self.runtime_trace("remote", "toggle start");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // Starting/stopping the host and reading settings may take locks and
+            // touch disk, so neither operation may run on the GPUI thread.
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                let remote = service.set_remote_enabled(next)?;
+                Ok((remote, service.reload_settings()))
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to run remote toggle: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok((remote, settings)) => {
+                        app.apply_settings_summary(settings);
+                        app.state.remote = remote;
+                        app.normalize_selected_remote_device();
+                        app.status_message = format!(
+                            "remote host setting saved: {}",
+                            if app.state.remote.enabled {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        );
+                        app.runtime_trace("remote", &format!("toggle ok elapsed_ms={elapsed_ms}"));
+                    }
+                    Err(error) => {
+                        app.status_message = format!("failed to save remote setting: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("toggle failed elapsed_ms={elapsed_ms} error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
     }
 
@@ -504,6 +540,9 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         if self.state.settings.remote_relay_url.trim() == relay_url.trim() {
             return;
         }
@@ -520,22 +559,7 @@ impl CoduxApp {
         reset_devices: bool,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .runtime_service
-            .set_remote_relay_url_with_device_reset(&relay_url, reset_devices)
-        {
-            Ok((settings, remote)) => {
-                self.apply_settings_summary(settings);
-                self.state.remote = remote;
-                self.remote_reconnecting = self.state.remote.status == "connecting";
-                self.normalize_selected_remote_device();
-                self.status_message = "remote relay setting saved".to_string();
-            }
-            Err(error) => {
-                self.status_message = format!("failed to save remote relay setting: {error}");
-            }
-        }
-        self.invalidate_remote_panel(cx);
+        self.apply_remote_relay_change(RemoteRelayChange::RelayUrl(relay_url), reset_devices, cx);
     }
 
     pub(super) fn set_remote_relay_authentication(
@@ -544,6 +568,9 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         if self.state.settings.remote_relay_authentication.trim() == relay_authentication.trim() {
             return;
         }
@@ -563,22 +590,11 @@ impl CoduxApp {
         reset_devices: bool,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .runtime_service
-            .set_remote_relay_authentication_with_device_reset(&relay_authentication, reset_devices)
-        {
-            Ok((settings, remote)) => {
-                self.apply_settings_summary(settings);
-                self.state.remote = remote;
-                self.remote_reconnecting = self.state.remote.status == "connecting";
-                self.normalize_selected_remote_device();
-                self.status_message = "remote relay setting saved".to_string();
-            }
-            Err(error) => {
-                self.status_message = format!("failed to save remote relay setting: {error}");
-            }
-        }
-        self.invalidate_remote_panel(cx);
+        self.apply_remote_relay_change(
+            RemoteRelayChange::Authentication(relay_authentication),
+            reset_devices,
+            cx,
+        );
     }
 
     pub(super) fn set_remote_relay_preset(
@@ -587,6 +603,9 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         if self.state.settings.remote_relay_preset == relay_preset {
             return;
         }
@@ -603,21 +622,67 @@ impl CoduxApp {
         reset_devices: bool,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .runtime_service
-            .set_remote_relay_preset_with_device_reset(&relay_preset, reset_devices)
-        {
-            Ok((settings, remote)) => {
-                self.apply_settings_summary(settings);
-                self.state.remote = remote;
-                self.remote_reconnecting = self.state.remote.status == "connecting";
-                self.normalize_selected_remote_device();
-                self.status_message = "remote relay setting saved".to_string();
-            }
-            Err(error) => {
-                self.status_message = format!("failed to save remote relay setting: {error}");
-            }
+        self.apply_remote_relay_change(RemoteRelayChange::Preset(relay_preset), reset_devices, cx);
+    }
+
+    fn apply_remote_relay_change(
+        &mut self,
+        change: RemoteRelayChange,
+        reset_devices: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.remote_operation_in_flight.is_some() {
+            return;
         }
+        let service = self.runtime_service.clone();
+        let started_at = Instant::now();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Relay);
+        self.status_message = "saving remote relay setting".to_string();
+        self.runtime_trace("remote", "relay_save start");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // Relay updates can reconnect Iroh and rewrite paired-device state;
+            // keep the complete transaction on the bounded blocking pool.
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || match change {
+                RemoteRelayChange::Preset(value) => {
+                    service.set_remote_relay_preset_with_device_reset(&value, reset_devices)
+                }
+                RemoteRelayChange::RelayUrl(value) => {
+                    service.set_remote_relay_url_with_device_reset(&value, reset_devices)
+                }
+                RemoteRelayChange::Authentication(value) => {
+                    service.set_remote_relay_authentication_with_device_reset(&value, reset_devices)
+                }
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to run relay update: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok((settings, remote)) => {
+                        app.apply_settings_summary(settings);
+                        app.state.remote = remote;
+                        app.remote_reconnecting = app.state.remote.status == "connecting";
+                        app.normalize_selected_remote_device();
+                        app.status_message = "remote relay setting saved".to_string();
+                        app.runtime_trace(
+                            "remote",
+                            &format!("relay_save ok elapsed_ms={elapsed_ms}"),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message =
+                            format!("failed to save remote relay setting: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("relay_save failed elapsed_ms={elapsed_ms} error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
     }
 
@@ -626,6 +691,9 @@ impl CoduxApp {
     }
 
     fn confirm_remote_relay_change(&mut self, change: RemoteRelayChange, cx: &mut Context<Self>) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         let service = self.runtime_service.clone();
         let title = self.text("settings.remote.relay_change.title", "Change Relay Network");
         let message = self.text(
@@ -634,6 +702,9 @@ impl CoduxApp {
         );
         let confirm_label = self.text("common.confirm", "Confirm");
         let cancel_label = self.text("common.cancel", "Cancel");
+        // Reserve the remote mutation slot while the native confirmation dialog
+        // is open so another action cannot change the same settings underneath it.
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Relay);
         self.status_message = "waiting for remote relay change confirmation".to_string();
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
             let result = codux_runtime::async_runtime::spawn_blocking(move || {
@@ -649,22 +720,17 @@ impl CoduxApp {
             .and_then(|result| result);
 
             let _ = this.update(cx, |app, cx| match result {
-                Ok(true) => match change {
-                    RemoteRelayChange::Preset(relay_preset) => {
-                        app.apply_remote_relay_preset_change(relay_preset, true, cx)
-                    }
-                    RemoteRelayChange::RelayUrl(relay_url) => {
-                        app.apply_remote_relay_url_change(relay_url, true, cx)
-                    }
-                    RemoteRelayChange::Authentication(relay_authentication) => {
-                        app.apply_remote_relay_authentication_change(relay_authentication, true, cx)
-                    }
-                },
+                Ok(true) => {
+                    app.remote_operation_in_flight = None;
+                    app.apply_remote_relay_change(change, true, cx);
+                }
                 Ok(false) => {
+                    app.remote_operation_in_flight = None;
                     app.status_message = "remote relay change canceled".to_string();
                     app.invalidate_remote_panel(cx);
                 }
                 Err(error) => {
+                    app.remote_operation_in_flight = None;
                     app.status_message =
                         format!("failed to show remote relay confirmation: {error}");
                     app.invalidate_remote_panel(cx);
@@ -676,7 +742,10 @@ impl CoduxApp {
     }
 
     pub(super) fn reconnect_remote(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_reconnecting {
+        if self.remote_reconnecting
+            || self.remote_operation_in_flight.is_some()
+            || self.remote_pairing_creating
+        {
             return;
         }
 
@@ -721,21 +790,53 @@ impl CoduxApp {
     }
 
     pub(super) fn refresh_remote_devices(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        match self.runtime_service.refresh_remote_devices() {
-            Ok(remote) => {
-                self.state.remote = remote;
-                self.normalize_selected_remote_device();
-                self.status_message = "remote devices refreshed".to_string();
-            }
-            Err(error) => {
-                self.status_message = format!("failed to refresh remote devices: {error}")
-            }
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
         }
+        let service = self.runtime_service.clone();
+        let started_at = Instant::now();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Refresh);
+        self.status_message = "refreshing remote devices".to_string();
+        self.runtime_trace("remote", "device_refresh start");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                service.refresh_remote_devices()
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to run device refresh: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok(remote) => {
+                        app.state.remote = remote;
+                        app.normalize_selected_remote_device();
+                        app.status_message = "remote devices refreshed".to_string();
+                        app.runtime_trace(
+                            "remote",
+                            &format!("device_refresh ok elapsed_ms={elapsed_ms}"),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message = format!("failed to refresh remote devices: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("device_refresh failed elapsed_ms={elapsed_ms} error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
     }
 
     pub(super) fn create_remote_pairing(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_pairing_creating {
+        if self.remote_pairing_creating
+            || self.remote_operation_in_flight.is_some()
+            || self.remote_reconnecting
+        {
             return;
         }
 
@@ -904,6 +1005,9 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         self.remote_pairing_poll_generation = self.remote_pairing_poll_generation.wrapping_add(1);
         self.remote_pairing_sheet_open = false;
         self.remote_pairing_error = None;
@@ -911,14 +1015,14 @@ impl CoduxApp {
         self.status_message = "remote pairing cancelled".to_string();
 
         let service = self.runtime_service.clone();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::PairingCancel);
         self.runtime_trace("remote", "pairing_cancel start");
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
-            let result = codux_runtime::async_runtime::spawn_blocking(move || {
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
                 service.cancel_remote_pairing(&pairing_id)
             })
             .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
+            .unwrap_or_else(|error| Err(format!("failed to run pairing cancel: {error}")));
             let _ = this.update(cx, |app, cx| {
                 app.apply_remote_pairing_cancel_result(result, cx);
             });
@@ -943,11 +1047,73 @@ impl CoduxApp {
     /// host + any live connection. Removes it from the unified device list and
     /// from the add-project device picker.
     pub(super) fn forget_remote_host_device(&mut self, device_id: String, cx: &mut Context<Self>) {
-        match self.runtime_service.forget_remote_host(&device_id) {
-            Ok(_) => self.status_message = "forgot remote host".to_string(),
-            Err(error) => self.status_message = format!("forget host failed: {error}"),
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
         }
+        let service = self.runtime_service.clone();
+        let operation_id = device_id.clone();
+        let started_at = Instant::now();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Forget(operation_id));
+        self.status_message = "forgetting remote host".to_string();
+        self.runtime_trace("remote", "host_forget start");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // Forget acquires controller locks, shuts down a connection, and
+            // rewrites remote-controllers.json; all of it belongs off the UI thread.
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                service.forget_remote_host(&device_id)
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to run host forget: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok(hosts) => {
+                        app.apply_remote_saved_hosts(hosts);
+                        app.status_message = "forgot remote host".to_string();
+                        app.runtime_trace(
+                            "remote",
+                            &format!("host_forget ok elapsed_ms={elapsed_ms}"),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message = format!("forget host failed: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("host_forget failed elapsed_ms={elapsed_ms} error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+                app.invalidate_status_bar(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
+    }
+
+    /// Apply a disk-backed host snapshot returned by a completed background
+    /// operation. Keeping ids and rows in sync avoids a second file read.
+    fn apply_remote_saved_hosts(&mut self, hosts: Vec<codux_runtime::remote::SavedRemoteHost>) {
+        self.remote_saved_host_ids = hosts.iter().map(|host| host.device_id.clone()).collect();
+        self.remote_saved_hosts = hosts;
+    }
+
+    fn upsert_remote_saved_host(&mut self, host: codux_runtime::remote::SavedRemoteHost) {
+        if let Some(existing) = self
+            .remote_saved_hosts
+            .iter_mut()
+            .find(|existing| existing.device_id == host.device_id)
+        {
+            *existing = host;
+        } else {
+            self.remote_saved_hosts.push(host);
+        }
+        self.remote_saved_host_ids = self
+            .remote_saved_hosts
+            .iter()
+            .map(|host| host.device_id.clone())
+            .collect();
     }
 
     pub(super) fn open_remote_connect(&mut self, cx: &mut Context<Self>) {
@@ -1018,14 +1184,15 @@ impl CoduxApp {
                 app.remote_connect_busy = false;
                 match result {
                     Ok(saved) => {
-                        app.status_message = format!(
-                            "paired with {}",
-                            if saved.host_name.is_empty() {
-                                saved.host_id.clone()
-                            } else {
-                                saved.host_name.clone()
-                            }
-                        );
+                        let host_label = if saved.host_name.is_empty() {
+                            saved.host_id.clone()
+                        } else {
+                            saved.host_name.clone()
+                        };
+                        app.status_message = format!("paired with {}", host_label);
+                        // The background operation already returned the persisted
+                        // host, so update the render cache without rereading disk.
+                        app.upsert_remote_saved_host(saved);
                         app.remote_connect_open = false;
                         app.remote_connect_ticket = String::new();
                         app.remote_connect_name = String::new();
@@ -1036,6 +1203,7 @@ impl CoduxApp {
                     }
                 }
                 app.invalidate_remote_panel(cx);
+                app.invalidate_status_bar(cx);
             });
         })
         .detach();
@@ -1046,6 +1214,7 @@ impl CoduxApp {
         result: Result<RemoteSummary, String>,
         cx: &mut Context<Self>,
     ) {
+        self.remote_operation_in_flight = None;
         match result {
             Ok(remote) => {
                 self.state.remote = remote;
@@ -1067,19 +1236,7 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.remote_pairing_poll_generation = self.remote_pairing_poll_generation.wrapping_add(1);
-        match self.runtime_service.confirm_remote_pairing(&pairing_id) {
-            Ok(remote) => {
-                self.state.remote = remote;
-                self.finish_remote_pairing_decision(&pairing_id);
-                self.normalize_selected_remote_device();
-                self.status_message = "remote pairing confirmed".to_string();
-            }
-            Err(error) => {
-                self.status_message = format!("failed to confirm remote pairing: {error}");
-            }
-        }
-        self.invalidate_remote_panel(cx);
+        self.apply_remote_pairing_decision(pairing_id, RemotePairingDecision::Confirm, cx);
     }
 
     pub(super) fn reject_remote_pairing(
@@ -1088,16 +1245,68 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.remote_pairing_poll_generation = self.remote_pairing_poll_generation.wrapping_add(1);
-        match self.runtime_service.reject_remote_pairing(&pairing_id) {
-            Ok(remote) => {
-                self.state.remote = remote;
-                self.finish_remote_pairing_decision(&pairing_id);
-                self.normalize_selected_remote_device();
-                self.status_message = "remote pairing rejected".to_string();
-            }
-            Err(error) => self.status_message = format!("failed to reject remote pairing: {error}"),
+        self.apply_remote_pairing_decision(pairing_id, RemotePairingDecision::Reject, cx);
+    }
+
+    fn apply_remote_pairing_decision(
+        &mut self,
+        pairing_id: String,
+        decision: RemotePairingDecision,
+        cx: &mut Context<Self>,
+    ) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
         }
+        self.remote_pairing_poll_generation = self.remote_pairing_poll_generation.wrapping_add(1);
+        let service = self.runtime_service.clone();
+        let result_id = pairing_id.clone();
+        let confirmed = matches!(decision, RemotePairingDecision::Confirm);
+        let action = if confirmed { "confirm" } else { "reject" };
+        let started_at = Instant::now();
+        self.remote_operation_in_flight =
+            Some(RemoteSettingsOperation::PairingDecision(pairing_id.clone()));
+        self.status_message = format!("{action}ing remote pairing");
+        self.runtime_trace("remote", &format!("pairing_{action} start"));
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let result =
+                codux_runtime::async_runtime::run_limited_blocking(move || match decision {
+                    RemotePairingDecision::Confirm => service.confirm_remote_pairing(&pairing_id),
+                    RemotePairingDecision::Reject => service.reject_remote_pairing(&pairing_id),
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("failed to run pairing decision: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok(remote) => {
+                        app.state.remote = remote;
+                        app.finish_remote_pairing_decision(&result_id);
+                        app.normalize_selected_remote_device();
+                        app.status_message = if confirmed {
+                            "remote pairing confirmed".to_string()
+                        } else {
+                            "remote pairing rejected".to_string()
+                        };
+                        app.runtime_trace(
+                            "remote",
+                            &format!("pairing_{action} ok elapsed_ms={elapsed_ms}"),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message = format!("failed to {action} remote pairing: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!(
+                                "pairing_{action} failed elapsed_ms={elapsed_ms} error={error}"
+                            ),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
     }
 
@@ -1111,19 +1320,6 @@ impl CoduxApp {
         self.remote_pairing_sheet_open = false;
         self.remote_pairing_creating = false;
         self.remote_pairing_error = None;
-    }
-
-    pub(super) fn selected_remote_device(&self) -> Option<&RemoteDeviceSummary> {
-        self.selected_remote_device_id
-            .as_deref()
-            .and_then(|id| {
-                self.state
-                    .remote
-                    .device_list
-                    .iter()
-                    .find(|device| device.id == id)
-            })
-            .or_else(|| self.state.remote.device_list.first())
     }
 
     pub(super) fn normalize_selected_remote_device(&mut self) {
@@ -1148,50 +1344,65 @@ impl CoduxApp {
         }
     }
 
-    pub(super) fn select_remote_device(
-        &mut self,
-        device_id: String,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn revoke_remote_device(&mut self, device_id: String, cx: &mut Context<Self>) {
+        if self.remote_operation_in_flight.is_some() || self.remote_reconnecting {
+            return;
+        }
         let Some(device) = self
             .state
             .remote
             .device_list
             .iter()
             .find(|device| device.id == device_id)
+            .cloned()
         else {
             self.status_message = "remote device is no longer available".to_string();
-            self.normalize_selected_remote_device();
             self.invalidate_remote_panel(cx);
             return;
         };
-        self.selected_remote_device_id = Some(device.id.clone());
-        self.status_message = format!("selected remote device: {}", empty_label(&device.name));
-        self.invalidate_remote_panel(cx);
-    }
-
-    pub(super) fn revoke_selected_remote_device(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(device) = self.selected_remote_device().cloned() else {
-            self.status_message = "no remote device selected".to_string();
-            self.invalidate_remote_panel(cx);
-            return;
-        };
-        match self.runtime_service.revoke_remote_device(&device.id) {
-            Ok(remote) => {
-                self.state.remote = remote;
-                self.state.settings = self.runtime_service.reload_state().settings;
-                self.selected_remote_device_id = None;
-                self.normalize_selected_remote_device();
-                self.status_message =
-                    format!("remote device revoked: {}", empty_label(&device.name));
-            }
-            Err(error) => self.status_message = format!("failed to revoke remote device: {error}"),
-        }
+        let service = self.runtime_service.clone();
+        let operation_id = device.id.clone();
+        let device_name = empty_label(&device.name);
+        let started_at = Instant::now();
+        self.remote_operation_in_flight = Some(RemoteSettingsOperation::Revoke(operation_id));
+        self.status_message = format!("revoking remote device: {device_name}");
+        self.runtime_trace("remote", "device_revoke start");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // Revocation rewrites remote settings. Return only the two affected
+            // snapshots instead of reloading every application domain.
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                let remote = service.revoke_remote_device(&device_id)?;
+                Ok((remote, service.reload_settings()))
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to run device revoke: {error}")));
+            let elapsed_ms = started_at.elapsed().as_millis();
+            let _ = this.update(cx, |app, cx| {
+                app.remote_operation_in_flight = None;
+                match result {
+                    Ok((remote, settings)) => {
+                        app.state.remote = remote;
+                        app.apply_settings_summary(settings);
+                        app.selected_remote_device_id = None;
+                        app.normalize_selected_remote_device();
+                        app.status_message = format!("remote device revoked: {device_name}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("device_revoke ok elapsed_ms={elapsed_ms}"),
+                        );
+                    }
+                    Err(error) => {
+                        app.status_message = format!("failed to revoke remote device: {error}");
+                        app.runtime_trace(
+                            "remote",
+                            &format!("device_revoke failed elapsed_ms={elapsed_ms} error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_remote_panel(cx);
+            });
+        })
+        .detach();
         self.invalidate_remote_panel(cx);
     }
 

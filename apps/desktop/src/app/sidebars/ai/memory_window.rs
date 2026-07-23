@@ -10,6 +10,7 @@ pub(in crate::app) struct MemoryManagerWindowInput<'a> {
     pub(in crate::app) selected_memory_summary_id: Option<&'a str>,
     pub(in crate::app) memory_processing: bool,
     pub(in crate::app) memory_refreshing: bool,
+    pub(in crate::app) memory_failed_retrying: bool,
     pub(in crate::app) project_profile_refreshing: bool,
     pub(in crate::app) language: &'a str,
 }
@@ -28,6 +29,7 @@ pub(in crate::app) fn memory_manager_window_workspace(
         selected_memory_summary_id,
         memory_processing,
         memory_refreshing,
+        memory_failed_retrying,
         project_profile_refreshing,
         language,
     } = input;
@@ -279,21 +281,39 @@ pub(in crate::app) fn memory_manager_window_workspace(
                                                         },
                                                     ))
                                                 })
-                                                .when(active_tab == MemoryManagerTab::Failed, |this| {
-                                                    this.child(ai_memory_row_icon_button(
-                                                        "memory-manager-window-clear-failed",
-                                                        HeroIconName::XCircle,
-                                                        ai_sidebar_text(
-                                                            language,
-                                                            "memory.manager.failed.clear",
-                                                            "Clear Failed Records",
-                                                        ),
-                                                        cx,
-                                                        |app, _event, window, cx| {
-                                                            app.clear_memory_extraction_failures(window, cx)
-                                                        },
-                                                    ))
-                                                })
+                                                .when(
+                                                    active_tab == MemoryManagerTab::Failed
+                                                        && manager.extraction.failed > 0,
+                                                    |this| {
+                                                        this.child(ai_memory_header_icon_button(
+                                                            "memory-manager-window-retry-all-failed",
+                                                            HeroIconName::ArrowPath,
+                                                            ai_sidebar_text(
+                                                                language,
+                                                                "memory.manager.failed.retry_all",
+                                                                "Retry All Failed Tasks",
+                                                            ),
+                                                            memory_failed_retrying,
+                                                            cx,
+                                                            |app, _event, _window, cx| {
+                                                                app.retry_all_failed_memory_extractions(cx)
+                                                            },
+                                                        ))
+                                                        .child(ai_memory_row_icon_button(
+                                                            "memory-manager-window-clear-failed",
+                                                            HeroIconName::XCircle,
+                                                            ai_sidebar_text(
+                                                                language,
+                                                                "memory.manager.failed.clear",
+                                                                "Clear Failed Records",
+                                                            ),
+                                                            cx,
+                                                            |app, _event, window, cx| {
+                                                                app.clear_memory_extraction_failures(window, cx)
+                                                            },
+                                                        ))
+                                                    },
+                                                )
                                                 .child(ai_memory_header_icon_button(
                                                     "memory-manager-window-refresh",
                                                     HeroIconName::ArrowPath,

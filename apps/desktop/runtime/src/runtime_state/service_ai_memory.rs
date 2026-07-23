@@ -266,6 +266,12 @@ impl RuntimeService {
         MemoryService::new(self.support_dir.clone()).retry_failed_extraction_task(task_id)
     }
 
+    pub fn retry_all_failed_memory_extractions(
+        &self,
+    ) -> Result<MemoryExtractionStatusSnapshot, String> {
+        MemoryService::new(self.support_dir.clone()).retry_all_failed_extraction_tasks()
+    }
+
     pub fn enqueue_automatic_memory_extraction_candidates(
         &self,
     ) -> Result<MemoryExtractionEnqueueResult, String> {

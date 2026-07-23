@@ -1,5 +1,7 @@
 use crate::heroicons::HeroIconName;
 use anyhow::Result;
+#[cfg(target_os = "macos")]
+use cocoa::appkit::NSEventModifierFlags;
 use codux_runtime::project_store::ProjectRuntimeTarget;
 use codux_runtime::runtime_terminal::RuntimeTerminalController;
 use codux_runtime::terminal_pty::{
@@ -27,6 +29,8 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::{Scrollbar, ScrollbarAxis, ScrollbarHandle, ScrollbarShow};
 use gpui_component::{ActiveTheme, Icon, Sizable, Size as ComponentSize, WindowExt};
+#[cfg(target_os = "macos")]
+use objc::{class, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 use regex::Regex;
 use std::{
@@ -51,6 +55,21 @@ pub use codux_runtime::terminal_pty::TerminalLaunchContext;
 // Every clipboard producer shares one sequence so a slower selection task
 // cannot overwrite a newer manual copy or OSC 52 clipboard write.
 static TERMINAL_CLIPBOARD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+fn terminal_native_control_modifier_pressed() -> bool {
+    unsafe {
+        // GPUI normalizes Control+left-click to a right-click with `control=false`; AppKit still
+        // exposes the physical key state, which lets terminal links distinguish that gesture.
+        let modifiers: NSEventModifierFlags = msg_send![class!(NSEvent), modifierFlags];
+        modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn terminal_native_control_modifier_pressed() -> bool {
+    false
+}
 
 include!("terminal/pane.rs");
 include!("terminal/config.rs");

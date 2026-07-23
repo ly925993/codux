@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) fn settings_remote_relay_url_editor(
     value: &str,
+    busy: bool,
+    saving: bool,
     window: &mut Window,
     cx: &mut Context<CoduxApp>,
     _language: &str,
@@ -28,13 +30,15 @@ pub(super) fn settings_remote_relay_url_editor(
         .child(
             Input::new(&state)
                 .with_size(gpui_component::Size::Medium)
+                .disabled(busy)
                 .w_full(),
         )
         .when(has_changes, |this| {
-            this.child(settings_icon_button_state(
+            this.child(settings_icon_button_loading_state(
                 "settings-remote-relay-url-apply",
                 HeroIconName::Check,
-                false,
+                saving,
+                busy,
                 cx,
                 move |app, _event, window, cx| {
                     app.set_remote_relay_url(input_state.read(cx).value().to_string(), window, cx)
@@ -46,6 +50,8 @@ pub(super) fn settings_remote_relay_url_editor(
 
 pub(super) fn settings_remote_relay_authentication_editor(
     value: &str,
+    busy: bool,
+    saving: bool,
     window: &mut Window,
     cx: &mut Context<CoduxApp>,
 ) -> AnyElement {
@@ -76,13 +82,15 @@ pub(super) fn settings_remote_relay_authentication_editor(
         .child(
             Input::new(&state)
                 .with_size(gpui_component::Size::Medium)
+                .disabled(busy)
                 .w_full(),
         )
         .when(has_changes, |this| {
-            this.child(settings_icon_button_state(
+            this.child(settings_icon_button_loading_state(
                 "settings-remote-relay-authentication-apply",
                 HeroIconName::Check,
-                false,
+                saving,
+                busy,
                 cx,
                 move |app, _event, window, cx| {
                     app.set_remote_relay_authentication(
@@ -98,6 +106,8 @@ pub(super) fn settings_remote_relay_authentication_editor(
 
 pub(super) fn settings_remote_relay_custom_fields(
     settings: &SettingsSummary,
+    busy: bool,
+    saving: bool,
     window: &mut Window,
     cx: &mut Context<CoduxApp>,
     language: &str,
@@ -118,6 +128,8 @@ pub(super) fn settings_remote_relay_custom_fields(
             )),
             settings_remote_relay_url_editor(
                 settings.remote_relay_url.as_str(),
+                busy,
+                saving,
                 window,
                 cx,
                 language,
@@ -136,6 +148,8 @@ pub(super) fn settings_remote_relay_custom_fields(
             )),
             settings_remote_relay_authentication_editor(
                 settings.remote_relay_authentication.as_str(),
+                busy,
+                saving,
                 window,
                 cx,
             ),

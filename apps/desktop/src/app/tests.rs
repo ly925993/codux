@@ -252,6 +252,10 @@ fn terminal_restore_state_rebuilds_invalid_layout_without_compat_fallback() {
 fn terminal_config_maps_copy_on_select_setting() {
     let mut settings = SettingsSummary::default();
     assert!(
+        terminal_config_for_settings(&settings, WindowAppearance::Light).link_navigation,
+        "terminal links and paths remain enabled by default"
+    );
+    assert!(
         !terminal_config_for_settings(&settings, WindowAppearance::Light).copy_on_select,
         "copy on select remains opt-in"
     );
@@ -263,10 +267,12 @@ fn terminal_config_maps_copy_on_select_setting() {
     );
 
     settings.terminal_right_click_paste = true;
+    settings.terminal_link_navigation = false;
     settings.terminal_trim_trailing_whitespace_on_copy = true;
     settings.terminal_trim_trailing_whitespace_on_paste = true;
     let config = terminal_config_for_settings(&settings, WindowAppearance::Light);
     assert!(config.right_click_paste);
+    assert!(!config.link_navigation);
     assert!(config.trim_trailing_whitespace_on_copy);
     assert!(config.trim_trailing_whitespace_on_paste);
 }
@@ -281,6 +287,11 @@ fn copy_on_select_does_not_require_terminal_renderer_rebuild() {
 
     current = previous.clone();
     current.terminal_right_click_paste = true;
+    assert!(!terminal_config_except_copy_changed(&previous, &current));
+    assert!(terminal_behavior_settings_changed(&previous, &current));
+
+    current = previous.clone();
+    current.terminal_link_navigation = false;
     assert!(!terminal_config_except_copy_changed(&previous, &current));
     assert!(terminal_behavior_settings_changed(&previous, &current));
 

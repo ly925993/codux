@@ -1,4 +1,24 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DBProjectIdsField {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_project_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        match Option::<DBProjectIdsField>::deserialize(deserializer)? {
+            Some(DBProjectIdsField::One(project_id)) => vec![project_id],
+            Some(DBProjectIdsField::Many(project_ids)) => project_ids,
+            None => Vec::new(),
+        },
+    )
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,11 +33,13 @@ pub struct DBSummary {
 #[serde(rename_all = "camelCase")]
 pub struct DBProfileSummary {
     pub id: String,
-    pub project_id: String,
+    pub project_ids: Vec<String>,
     pub name: String,
     pub engine: String,
     pub endpoint: String,
     pub database: String,
+    pub environment: String,
+    pub group: Option<String>,
     pub read_only: bool,
     pub updated_at: i64,
 }
@@ -26,7 +48,13 @@ pub struct DBProfileSummary {
 #[serde(rename_all = "camelCase")]
 pub struct DBConnectionProfile {
     pub id: String,
-    pub project_id: String,
+    /// `projectId` is accepted so existing profile files migrate without user action.
+    #[serde(
+        default,
+        alias = "projectId",
+        deserialize_with = "deserialize_project_ids"
+    )]
+    pub project_ids: Vec<String>,
     pub name: String,
     pub engine: String,
     pub host: String,
@@ -38,6 +66,10 @@ pub struct DBConnectionProfile {
     #[serde(default)]
     pub ssl_mode: String,
     #[serde(default)]
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default)]
     pub read_only: bool,
     pub updated_at: i64,
 }
@@ -46,7 +78,12 @@ pub struct DBConnectionProfile {
 #[serde(rename_all = "camelCase")]
 pub struct DBProfileUpsertRequest {
     pub id: Option<String>,
-    pub project_id: String,
+    #[serde(
+        default,
+        alias = "projectId",
+        deserialize_with = "deserialize_project_ids"
+    )]
+    pub project_ids: Vec<String>,
     pub name: String,
     pub engine: String,
     pub host: Option<String>,
@@ -55,6 +92,10 @@ pub struct DBProfileUpsertRequest {
     pub username: Option<String>,
     pub password: Option<String>,
     pub ssl_mode: Option<String>,
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default)]
     pub read_only: bool,
 }

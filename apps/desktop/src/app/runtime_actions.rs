@@ -121,11 +121,6 @@ impl CoduxApp {
                         }
                         if include_runtime_refresh_tick {
                             app.spawn_runtime_scheduled_refresh(cx);
-                            // Safety-net: re-arm the reconnect loop for any saved
-                            // host that isn't connected, in case a drop's
-                            // link-state callback was ever missed. Idempotent —
-                            // skips live links, joins an in-flight retry.
-                            app.runtime_service.ensure_saved_remote_hosts_connected();
                         }
                         let today_level_changed = app.refresh_global_history_after_day_change(cx);
                         let result = if include_slow_tick {

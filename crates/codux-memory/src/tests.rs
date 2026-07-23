@@ -1413,6 +1413,45 @@ fn manager_snapshot_lists_failed_extractions_and_retry_requeues_task() {
 }
 
 #[test]
+fn retry_all_failed_extractions_requeues_every_failure_in_one_pass() {
+    let support_dir = temp_support_dir();
+    create_memory_db(&support_dir);
+    let service = MemoryService::new(support_dir.clone());
+    let conn = Connection::open(support_dir.join("memory.sqlite3")).unwrap();
+    conn.execute_batch(
+        r#"
+        INSERT INTO memory_extraction_queue (
+            id, project_id, tool, session_id, transcript_path, source_fingerprint,
+            status, attempts, error, enqueued_at, workspace_path
+        )
+        VALUES
+          ('failed-task-a', 'project-a', 'codex', 'session-a', '/tmp/a.jsonl', 'fp-a',
+           'failed', 1, 'provider unavailable', 90, '/workspace/project-a'),
+          ('failed-task-b', 'project-b', 'claude', 'session-b', '/tmp/b.jsonl', 'fp-b',
+           'failed', 2, 'invalid response', 91, '/workspace/project-b'),
+          ('pending-task', 'project-a', 'codex', 'session-c', '/tmp/c.jsonl', 'fp-c',
+           'pending', 0, NULL, 92, '/workspace/project-a');
+        "#,
+    )
+    .unwrap();
+
+    let status = service.retry_all_failed_extraction_tasks().unwrap();
+
+    assert_eq!(status.pending_count, 3);
+    assert_eq!(status.last_error, None);
+    let remaining_failed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_extraction_queue WHERE status = 'failed';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_failed, 0);
+
+    fs::remove_dir_all(support_dir).unwrap();
+}
+
+#[test]
 fn manager_snapshot_lists_active_extraction_queue() {
     let support_dir = temp_support_dir();
     create_memory_db(&support_dir);

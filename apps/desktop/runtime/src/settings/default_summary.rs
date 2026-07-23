@@ -15,6 +15,7 @@ impl Default for SettingsSummary {
             terminal_scrollback_lines: "2000".to_string(),
             terminal_copy_on_select: false,
             terminal_right_click_paste: false,
+            terminal_link_navigation: true,
             terminal_trim_trailing_whitespace_on_copy: false,
             terminal_trim_trailing_whitespace_on_paste: false,
             terminal_paste_images_as_paths: true,

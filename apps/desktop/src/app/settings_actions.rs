@@ -205,6 +205,26 @@ impl CoduxApp {
         self.invalidate_ui_region(cx, UiRegion::Root);
     }
 
+    pub(super) fn toggle_terminal_link_navigation(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_terminal_link_navigation",
+            "saving terminal link navigation setting",
+            move |service| service.toggle_terminal_link_navigation(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                app.apply_terminal_behavior_settings(cx);
+                app.propagate_terminal_behavior_settings_to_parent(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
     pub(super) fn toggle_terminal_trim_trailing_whitespace_on_copy(
         &mut self,
         _window: &mut Window,
@@ -249,8 +269,8 @@ impl CoduxApp {
     fn apply_terminal_behavior_settings(&self, cx: &mut Context<Self>) {
         let config = self.terminal_config_from_settings();
         for view in self.existing_terminal_views() {
-            view.update(cx, |terminal, _| {
-                terminal.update_behavior_settings(&config);
+            view.update(cx, |terminal, cx| {
+                terminal.update_behavior_settings(&config, cx);
             });
         }
     }
@@ -1988,6 +2008,7 @@ pub(in crate::app) fn terminal_behavior_settings_changed(
 ) -> bool {
     previous.terminal_copy_on_select != current.terminal_copy_on_select
         || previous.terminal_right_click_paste != current.terminal_right_click_paste
+        || previous.terminal_link_navigation != current.terminal_link_navigation
         || previous.terminal_trim_trailing_whitespace_on_copy
             != current.terminal_trim_trailing_whitespace_on_copy
         || previous.terminal_trim_trailing_whitespace_on_paste

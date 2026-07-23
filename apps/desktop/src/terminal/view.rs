@@ -37,6 +37,8 @@ pub struct TerminalView {
     _search_input_subscription: Option<Subscription>,
     link_opener: Option<TerminalLinkOpener>,
     selection_autoscroll: Option<SelectionAutoScroll>,
+    // Set only for the current Control-click so the outer right-click menu can add path actions.
+    context_menu_path: Option<TerminalPath>,
     // Right-click went to the app as a mouse report; the context menu must stay closed.
     context_menu_suppressed: bool,
     _observe_model: Subscription,
@@ -256,6 +258,7 @@ impl TerminalView {
             _search_input_subscription: None,
             link_opener: None,
             selection_autoscroll: None,
+            context_menu_path: None,
             context_menu_suppressed: false,
             _observe_model: observe_model,
             _observe_blink_manager: observe_blink_manager,
@@ -336,12 +339,17 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub fn update_behavior_settings(&mut self, config: &TerminalConfig) {
+    pub fn update_behavior_settings(
+        &mut self,
+        config: &TerminalConfig,
+        cx: &mut Context<Self>,
+    ) {
         let copy_behavior_changed = self.config.copy_on_select != config.copy_on_select
             || self.config.trim_trailing_whitespace_on_copy
                 != config.trim_trailing_whitespace_on_copy;
         if !copy_behavior_changed
             && self.config.right_click_paste == config.right_click_paste
+            && self.config.link_navigation == config.link_navigation
             && self.config.trim_trailing_whitespace_on_paste
                 == config.trim_trailing_whitespace_on_paste
         {
@@ -352,8 +360,15 @@ impl TerminalView {
         }
         self.config.copy_on_select = config.copy_on_select;
         self.config.right_click_paste = config.right_click_paste;
+        self.config.link_navigation = config.link_navigation;
         self.config.trim_trailing_whitespace_on_copy = config.trim_trailing_whitespace_on_copy;
         self.config.trim_trailing_whitespace_on_paste = config.trim_trailing_whitespace_on_paste;
+        if !config.link_navigation {
+            self.hover_link = None;
+            self.context_menu_path = None;
+        }
+        // Behavior toggles update pointer affordances without rebuilding renderer caches.
+        cx.notify();
     }
 
     pub fn set_focus_observer<F>(&mut self, observer: F)
@@ -731,17 +746,42 @@ impl TerminalView {
     ) {
         window.focus(&self.focus_handle, cx);
         self.mouse_interaction = TerminalMouseInteraction::None;
+        // A normal right-click must never reuse a path captured by an earlier gesture.
+        self.context_menu_path = None;
         if event.button == MouseButton::Left {
             // Any new left-button gesture supersedes a pending automatic copy.
             self.invalidate_pending_selection_copy();
         }
         let point = self.layout.lock().cell_at(event.position);
         let model_point = self.layout.lock().model_cell_at(event.position);
-        if event.button == MouseButton::Left
-            && event.modifiers.secondary()
-            && let Some(link) = model_point.and_then(|point| self.link_at_cell(point, cx))
+        // GPUI normalizes macOS Control+left-click to a right-click and clears both its event and
+        // cached window flag, so merge the physical AppKit key state before routing the gesture.
+        let control_pressed = self.config.link_navigation
+            && terminal_control_modifier_pressed(
+                event.modifiers,
+                window.modifiers(),
+                terminal_native_control_modifier_pressed(),
+            );
+        let link_click_requested = self.config.link_navigation
+            && terminal_link_click_requested(event.button, event.modifiers, control_pressed);
+        let path_menu_requested = self.config.link_navigation
+            && terminal_path_menu_requested(event.button, control_pressed);
+        // URL and path resolution share one immutable snapshot for this gesture.
+        let click_content = (link_click_requested || path_menu_requested)
+            .then(|| model_point.map(|_| self.model.read(cx).snapshot()))
+            .flatten();
+        if link_click_requested
+            && let Some(link) = model_point.and_then(|point| {
+                click_content
+                    .as_ref()
+                    .and_then(|content| terminal_link_at_cell(content, point))
+            })
         {
             self.mouse_interaction = TerminalMouseInteraction::Link;
+            if event.button == MouseButton::Right {
+                // A macOS Control-click may arrive as right-click; keep the wrapping menu closed.
+                self.context_menu_suppressed = true;
+            }
             if let Some(opener) = self.link_opener.clone() {
                 opener(link.url.clone(), window, cx);
             } else if let Err(error) = codux_runtime::app_commands::app_open_url(link.url.clone()) {
@@ -749,6 +789,23 @@ impl TerminalView {
             }
             self.hover_link = Some(link);
             cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
+        if path_menu_requested
+            && self.session.local_viewport_owns()
+            && !self.should_report_mouse(event.modifiers.shift, cx)
+            && let Some(path) = model_point.and_then(|point| {
+                click_content
+                    .as_ref()
+                    .and_then(|content| terminal_path_at_cell(content, point))
+            })
+        {
+            // On macOS Control-click is delivered as a right-button event. Leaving it in the
+            // bubble phase lets gpui-component open the existing context-menu surface.
+            self.context_menu_path = Some(path);
+            self.context_menu_suppressed = false;
             cx.notify();
             return;
         }
@@ -1255,13 +1312,19 @@ impl TerminalView {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) {
+        if !self.config.link_navigation {
+            if self.hover_link.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
         let next = self
             .model_cell_at(position)
             .and_then(|point| self.link_at_cell(point, cx));
-        if modifiers.secondary() && self.hover_link != next {
+        if terminal_link_modifier_pressed(modifiers) && self.hover_link != next {
             self.hover_link = next;
             cx.notify();
-        } else if !modifiers.secondary() && self.hover_link.take().is_some() {
+        } else if !terminal_link_modifier_pressed(modifiers) && self.hover_link.take().is_some() {
             cx.notify();
         }
     }

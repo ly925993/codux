@@ -684,6 +684,59 @@ impl CoduxApp {
         self.invalidate_memory_panel(cx);
     }
 
+    pub(super) fn retry_all_failed_memory_extractions(&mut self, cx: &mut Context<Self>) {
+        if self.memory_failed_retrying || self.state.memory_manager.extraction.failed <= 0 {
+            return;
+        }
+        self.memory_failed_retrying = true;
+        self.invalidate_memory_panel(cx);
+        let service = self.runtime_service.clone();
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            // A large failed queue is rewritten by one SQL statement off the GPUI thread.
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                service.retry_all_failed_memory_extractions()
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+
+            let _ = this.update(cx, |app, cx| {
+                app.memory_failed_retrying = false;
+                match result {
+                    Ok(status) => {
+                        let retried = app.state.memory_manager.extraction.failed.max(0);
+                        app.state.memory_manager.extraction.queued = status.pending_count.max(0);
+                        app.state.memory_manager.extraction.running = status.running_count.max(0);
+                        app.state.memory_manager.extraction.failed = 0;
+                        app.state.memory_manager.extraction.last_error = status.last_error.clone();
+                        app.state.memory_manager.failed_extractions.clear();
+                        app.status_message = format!("retried {retried} failed memory tasks");
+                        app.runtime_trace(
+                            "memory",
+                            &format!(
+                                "retry_all_failed ok retried={retried} pending={} running={}",
+                                status.pending_count, status.running_count
+                            ),
+                        );
+                        publish_memory_update();
+                        publish_child_window_update(ChildWindowUpdateKind::Memory);
+                        app.start_memory_extraction_status_refresh(cx);
+                        app.process_queued_memory_extraction_async(cx);
+                    }
+                    Err(error) => {
+                        app.state.memory_manager.extraction.last_error = Some(error.clone());
+                        app.runtime_trace(
+                            "memory",
+                            &format!("retry_all_failed failed error={error}"),
+                        );
+                    }
+                }
+                app.invalidate_memory_panel(cx);
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn clear_memory_extraction_failures(
         &mut self,
         _window: &mut Window,

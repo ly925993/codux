@@ -33,6 +33,35 @@ pub(in crate::app) struct ProjectEnvironmentVariableDraft {
     pub(in crate::app) value: String,
 }
 
+/// A single serialized mutation in Settings -> Remote. Remote operations can
+/// touch the same settings file, transport state, and device registry, so the
+/// UI keeps one in flight at a time instead of allowing competing disk/network
+/// work or duplicate clicks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::app) enum RemoteSettingsOperation {
+    Toggle,
+    Relay,
+    Refresh,
+    Revoke(String),
+    Forget(String),
+    PairingCancel,
+    PairingDecision(String),
+}
+
+impl RemoteSettingsOperation {
+    pub(in crate::app) fn is_revoke(&self, device_id: &str) -> bool {
+        matches!(self, Self::Revoke(id) if id == device_id)
+    }
+
+    pub(in crate::app) fn is_forget(&self, device_id: &str) -> bool {
+        matches!(self, Self::Forget(id) if id == device_id)
+    }
+
+    pub(in crate::app) fn is_pairing_decision(&self, pairing_id: &str) -> bool {
+        matches!(self, Self::PairingDecision(id) if id == pairing_id)
+    }
+}
+
 pub(in crate::app) fn project_environment_variable_drafts(
     variables: BTreeMap<String, String>,
 ) -> Vec<ProjectEnvironmentVariableDraft> {
@@ -138,6 +167,7 @@ pub struct CoduxApp {
     pub(in crate::app) pet_dex_window: Option<AnyWindowHandle>,
     pub(in crate::app) ssh_profile_editor_window: Option<AnyWindowHandle>,
     pub(in crate::app) db_profile_editor_window: Option<AnyWindowHandle>,
+    pub(in crate::app) db_profile_share_window: Option<AnyWindowHandle>,
     pub(in crate::app) file_picker_window: Option<AnyWindowHandle>,
     pub(in crate::app) file_picker_mode: FilePickerMode,
     pub(in crate::app) file_picker_target: FilePickerTarget,
@@ -316,6 +346,8 @@ pub struct CoduxApp {
     pub(in crate::app) memory_manager_refreshing: bool,
     pub(in crate::app) memory_manager_refresh_generation: u64,
     pub(in crate::app) memory_project_profile_refreshing: bool,
+    /// Prevents duplicate bulk queue updates while the background SQLite write is running.
+    pub(in crate::app) memory_failed_retrying: bool,
     pub(in crate::app) performance_refresh_in_flight: bool,
     pub(in crate::app) pending_performance_refresh: Option<PerformanceSummary>,
     pub(in crate::app) today_level_day_start: f64,
@@ -332,9 +364,17 @@ pub struct CoduxApp {
     pub(in crate::app) db_saving: bool,
     pub(in crate::app) db_testing: bool,
     pub(in crate::app) db_test_result: Option<DBProfileTestDisplay>,
+    pub(in crate::app) db_share_error: Option<String>,
     pub(in crate::app) db_draft_id: Option<String>,
-    pub(in crate::app) db_draft_project_id: String,
+    /// A database profile is stored once and may be visible in multiple root projects.
+    pub(in crate::app) db_draft_project_ids: Vec<String>,
+    pub(in crate::app) db_share_original_project_ids: Vec<String>,
+    /// Immutable picker snapshot and stable scroll state keep large project lists responsive.
+    pub(in crate::app) db_share_projects: Rc<Vec<ProjectInfo>>,
+    pub(in crate::app) db_share_scroll_handle: UniformListScrollHandle,
     pub(in crate::app) db_draft_name: String,
+    pub(in crate::app) db_draft_environment: String,
+    pub(in crate::app) db_draft_group: String,
     pub(in crate::app) db_draft_engine: String,
     pub(in crate::app) db_draft_host: String,
     pub(in crate::app) db_draft_port: String,
@@ -357,6 +397,9 @@ pub struct CoduxApp {
     pub(in crate::app) ssh_draft_key_passphrase: String,
     pub(in crate::app) selected_remote_device_id: Option<String>,
     pub(in crate::app) remote_reconnecting: bool,
+    /// Keeps remote settings mutations off the GPUI thread and blocks duplicate
+    /// or conflicting device/configuration actions until the result is applied.
+    pub(in crate::app) remote_operation_in_flight: Option<RemoteSettingsOperation>,
     pub(in crate::app) remote_pairing_sheet_open: bool,
     pub(in crate::app) remote_pairing_creating: bool,
     pub(in crate::app) remote_pairing_error: Option<String>,
@@ -386,6 +429,17 @@ pub struct CoduxApp {
     /// connection badge and triggers terminal re-attach when a host reconnects.
     pub(in crate::app) remote_link_states:
         std::collections::HashMap<String, codux_runtime::remote::ControllerLinkState>,
+    /// Coalesces the one-second host/link snapshot poll when disk or a transport
+    /// lock takes longer than one tick.
+    pub(in crate::app) remote_link_refresh_in_flight: bool,
+    /// Cached transport paths for the Settings device list. Transport callbacks
+    /// update the runtime cache; the slow activity tick copies it here so render
+    /// never takes controller locks.
+    pub(in crate::app) remote_link_paths:
+        std::collections::HashMap<String, codux_runtime::remote::ControllerLinkPath>,
+    /// Full outbound host snapshot for Settings -> Remote. Reading the backing
+    /// JSON file from render caused visible stalls on both macOS and Windows.
+    pub(in crate::app) remote_saved_hosts: Vec<codux_runtime::remote::SavedRemoteHost>,
     /// Device ids of the OUTBOUND saved hosts — the persistent registry shown in
     /// the device list. Cached for the status-bar count because
     /// `saved_remote_hosts()` is a disk read and must not run per render; a link

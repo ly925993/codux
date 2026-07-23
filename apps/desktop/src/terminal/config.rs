@@ -12,6 +12,8 @@ pub struct TerminalConfig {
     pub copy_on_select: bool,
     /// Pastes on an unmodified right click; Shift+right-click remains the menu gesture.
     pub right_click_paste: bool,
+    /// Enables modifier-assisted URL opening and absolute-path actions.
+    pub link_navigation: bool,
     /// Removes spaces and tabs at hard line endings when copying a selection.
     pub trim_trailing_whitespace_on_copy: bool,
     /// Removes spaces and tabs at line endings from plain-text clipboard pastes.
@@ -58,6 +60,7 @@ pub fn terminal_config() -> TerminalConfig {
         colors,
         copy_on_select: false,
         right_click_paste: false,
+        link_navigation: true,
         trim_trailing_whitespace_on_copy: false,
         trim_trailing_whitespace_on_paste: false,
         paste_images_as_paths: true,

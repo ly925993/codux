@@ -36,6 +36,15 @@ impl CoduxApp {
         runtime: RuntimeInventory,
         runtime_service: RuntimeService,
     ) -> Self {
+        // Auxiliary settings windows own their own render cache. Populate it
+        // once here; the activity tick keeps it current without render-time I/O.
+        let remote_saved_hosts = runtime_service.saved_remote_hosts();
+        let remote_saved_host_ids = remote_saved_hosts
+            .iter()
+            .map(|host| host.device_id.clone())
+            .collect();
+        let remote_link_states = runtime_service.remote_controller_link_states();
+        let remote_link_paths = runtime_service.remote_controller_link_paths();
         let selected_ai_provider_id = state
             .settings
             .ai_providers
@@ -131,6 +140,7 @@ impl CoduxApp {
             pet_dex_window: None,
             ssh_profile_editor_window: None,
             db_profile_editor_window: None,
+            db_profile_share_window: None,
             file_picker_window: None,
             file_picker_mode: FilePickerMode::OpenFolder,
             file_picker_target: FilePickerTarget::ProjectEditorPath,
@@ -294,6 +304,7 @@ impl CoduxApp {
             memory_manager_refreshing: false,
             memory_manager_refresh_generation: 0,
             memory_project_profile_refreshing: false,
+            memory_failed_retrying: false,
             performance_refresh_in_flight: false,
             pending_performance_refresh: None,
             today_level_day_start: codux_runtime::ai_history_normalized::local_day_start_seconds(
@@ -312,9 +323,15 @@ impl CoduxApp {
             db_saving: false,
             db_testing: false,
             db_test_result: None,
+            db_share_error: None,
             db_draft_id: None,
-            db_draft_project_id: String::new(),
+            db_draft_project_ids: Vec::new(),
+            db_share_original_project_ids: Vec::new(),
+            db_share_projects: Rc::new(Vec::new()),
+            db_share_scroll_handle: UniformListScrollHandle::new(),
             db_draft_name: String::new(),
+            db_draft_environment: "development".to_string(),
+            db_draft_group: String::new(),
             db_draft_engine: "postgres".to_string(),
             db_draft_host: "localhost".to_string(),
             db_draft_port: "5432".to_string(),
@@ -337,6 +354,7 @@ impl CoduxApp {
             ssh_draft_key_passphrase: String::new(),
             selected_remote_device_id,
             remote_reconnecting: false,
+            remote_operation_in_flight: None,
             remote_pairing_sheet_open: false,
             remote_pairing_creating: false,
             remote_pairing_error: None,
@@ -356,8 +374,11 @@ impl CoduxApp {
             task_section_terminals_collapsed: false,
             task_section_sessions_collapsed: false,
             project_list_state: None,
-            remote_link_states: std::collections::HashMap::new(),
-            remote_saved_host_ids: Vec::new(),
+            remote_link_states,
+            remote_link_refresh_in_flight: false,
+            remote_link_paths,
+            remote_saved_hosts,
+            remote_saved_host_ids,
             project_column_view: None,
             task_column_view: None,
             task_column_header_view: None,
@@ -525,6 +546,7 @@ impl CoduxApp {
             AuxiliaryWindowSlot::WorktreeCreator => &mut self.worktree_creator_window,
             AuxiliaryWindowSlot::SshProfileEditor => &mut self.ssh_profile_editor_window,
             AuxiliaryWindowSlot::DbProfileEditor => &mut self.db_profile_editor_window,
+            AuxiliaryWindowSlot::DbProfileShare => &mut self.db_profile_share_window,
             AuxiliaryWindowSlot::FilePicker => &mut self.file_picker_window,
         }
     }
@@ -626,6 +648,34 @@ impl CoduxApp {
             app.status_message =
                 translate(&locale, "db.profile.new_status", "new database profile");
         }
+        app
+    }
+
+    pub(in crate::app) fn new_db_profile_share_window_from_state(
+        profile: DBProfileSummary,
+        state: RuntimeState,
+        runtime: RuntimeInventory,
+        runtime_service: RuntimeService,
+    ) -> Self {
+        let mut app = Self::new_settings_window_from_state(state, runtime, runtime_service);
+        app.window_mode = AppWindowMode::DbProfileShare;
+        app.db_draft_id = Some(profile.id);
+        app.db_draft_name = profile.name;
+        app.db_share_projects = Rc::new(app.state.projects.clone());
+        let available_project_ids = app
+            .db_share_projects
+            .iter()
+            .map(|project| project.id.as_str())
+            .collect::<HashSet<_>>();
+        // Deleted projects are not retained as invisible bindings in the share picker.
+        app.db_draft_project_ids = profile
+            .project_ids
+            .into_iter()
+            .filter(|project_id| available_project_ids.contains(project_id.as_str()))
+            .collect();
+        app.db_share_original_project_ids = app.db_draft_project_ids.clone();
+        app.db_share_error = None;
+        app.status_message = "sharing database profile".to_string();
         app
     }
 

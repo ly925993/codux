@@ -101,6 +101,10 @@ impl RuntimeService {
         self.update_settings_with_side_effects(|settings| settings.toggle_terminal_right_click_paste())
     }
 
+    pub fn toggle_terminal_link_navigation(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| settings.toggle_terminal_link_navigation())
+    }
+
     pub fn toggle_terminal_trim_trailing_whitespace_on_copy(
         &self,
     ) -> Result<SettingsSummary, String> {

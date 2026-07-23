@@ -11,7 +11,7 @@ use uuid::Uuid;
 fn profile_with_secret(project_id: &str) -> DBConnectionProfile {
     DBConnectionProfile {
         id: "db-1".to_string(),
-        project_id: project_id.to_string(),
+        project_ids: vec![project_id.to_string()],
         name: "Production DB".to_string(),
         engine: "postgres".to_string(),
         host: "db.example.com".to_string(),
@@ -20,6 +20,8 @@ fn profile_with_secret(project_id: &str) -> DBConnectionProfile {
         username: "app_user".to_string(),
         password: Some("secret-password".to_string()),
         ssl_mode: "require".to_string(),
+        environment: "production".to_string(),
+        group: Some("Core".to_string()),
         read_only: true,
         updated_at: 1,
     }
@@ -71,7 +73,7 @@ fn db_store_filters_profiles_by_root_project() {
     store
         .upsert(DBProfileUpsertRequest {
             id: Some("db-1".to_string()),
-            project_id: "project-a".to_string(),
+            project_ids: vec!["project-a".to_string()],
             name: "A".to_string(),
             engine: "postgres".to_string(),
             host: Some("localhost".to_string()),
@@ -80,13 +82,15 @@ fn db_store_filters_profiles_by_root_project() {
             username: Some("user_a".to_string()),
             password: Some("secret-a".to_string()),
             ssl_mode: Some("prefer".to_string()),
+            environment: Some("development".to_string()),
+            group: None,
             read_only: true,
         })
         .unwrap();
     store
         .upsert(DBProfileUpsertRequest {
             id: Some("db-2".to_string()),
-            project_id: "project-b".to_string(),
+            project_ids: vec!["project-b".to_string()],
             name: "B".to_string(),
             engine: "mysql".to_string(),
             host: Some("localhost".to_string()),
@@ -95,6 +99,8 @@ fn db_store_filters_profiles_by_root_project() {
             username: Some("user_b".to_string()),
             password: Some("secret-b".to_string()),
             ssl_mode: Some("prefer".to_string()),
+            environment: Some("testing".to_string()),
+            group: None,
             read_only: false,
         })
         .unwrap();
@@ -116,7 +122,7 @@ fn db_store_filters_profiles_by_root_project() {
     store
         .upsert(DBProfileUpsertRequest {
             id: Some("db-1".to_string()),
-            project_id: "project-a".to_string(),
+            project_ids: vec!["project-a".to_string()],
             name: "A updated".to_string(),
             engine: "postgres".to_string(),
             host: Some("localhost".to_string()),
@@ -125,12 +131,183 @@ fn db_store_filters_profiles_by_root_project() {
             username: Some("user_a".to_string()),
             password: Some("secret-a".to_string()),
             ssl_mode: Some("prefer".to_string()),
+            environment: Some("development".to_string()),
+            group: None,
             read_only: true,
         })
         .unwrap();
     let updated = store.snapshot(Some("project-a"));
     assert_eq!(updated.profiles.len(), 1);
     assert_eq!(updated.profiles[0].name, "A updated");
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn legacy_project_id_migrates_without_losing_the_connection() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-legacy-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let document_store =
+        crate::config::ConfigDocumentStore::for_file(db_profiles_file_path_in(support_dir.clone()));
+    document_store
+        .save_snapshot(&serde_json::json!([{
+            "id": "db-legacy",
+            "projectId": "project-a",
+            "name": "Legacy",
+            "engine": "postgres",
+            "host": "localhost",
+            "port": 5432,
+            "database": "app",
+            "username": "app",
+            "sslMode": "prefer",
+            "readOnly": true,
+            "updatedAt": 7
+        }]))
+        .unwrap();
+
+    let snapshot = DBStore::from_support_dir(support_dir.clone()).snapshot(Some("project-a"));
+
+    assert_eq!(snapshot.profiles.len(), 1);
+    assert_eq!(snapshot.profiles[0].project_ids, vec!["project-a"]);
+    assert_eq!(snapshot.profiles[0].environment, "unspecified");
+    assert_eq!(snapshot.profiles[0].updated_at, 7);
+    let migrated = document_store.snapshot();
+    assert_eq!(migrated[0]["projectIds"], serde_json::json!(["project-a"]));
+    assert!(migrated[0].get("projectId").is_none());
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn shared_profile_updates_are_visible_in_every_bound_project() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-shared-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let store = DBStore::from_support_dir(support_dir.clone());
+    let request = DBProfileUpsertRequest {
+        id: Some("db-shared".to_string()),
+        project_ids: vec!["project-a".to_string(), "project-b".to_string()],
+        name: "Shared".to_string(),
+        engine: "postgres".to_string(),
+        host: Some("localhost".to_string()),
+        port: Some(5432),
+        database: "app".to_string(),
+        username: Some("app".to_string()),
+        password: Some("secret".to_string()),
+        ssl_mode: Some("require".to_string()),
+        environment: Some("production".to_string()),
+        group: Some("Orders".to_string()),
+        read_only: true,
+    };
+    store.upsert(request.clone()).unwrap();
+
+    let mut updated_request = request;
+    updated_request.name = "Shared updated".to_string();
+    store.upsert(updated_request).unwrap();
+
+    for project_id in ["project-a", "project-b"] {
+        let snapshot = store.snapshot(Some(project_id));
+        assert_eq!(snapshot.profiles.len(), 1);
+        assert_eq!(snapshot.profiles[0].name, "Shared updated");
+        assert_eq!(snapshot.profiles[0].environment, "production");
+        assert_eq!(snapshot.profiles[0].group.as_deref(), Some("Orders"));
+    }
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn updating_shared_projects_preserves_connection_fields_and_credentials() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-rebind-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let store = DBStore::from_support_dir(support_dir.clone());
+    store
+        .upsert(DBProfileUpsertRequest {
+            id: Some("db-shared".to_string()),
+            project_ids: vec!["project-a".to_string(), "project-b".to_string()],
+            name: "Production orders".to_string(),
+            engine: "postgres".to_string(),
+            host: Some("db.internal".to_string()),
+            port: Some(5432),
+            database: "orders".to_string(),
+            username: Some("codux".to_string()),
+            password: Some("secret".to_string()),
+            ssl_mode: Some("require".to_string()),
+            environment: Some("production".to_string()),
+            group: Some("Orders".to_string()),
+            read_only: true,
+        })
+        .unwrap();
+
+    // Duplicate and blank IDs model repeated UI events without changing connection data.
+    store
+        .update_projects(
+            "db-shared".to_string(),
+            vec![
+                "project-a".to_string(),
+                " project-c ".to_string(),
+                "project-c".to_string(),
+                String::new(),
+            ],
+        )
+        .unwrap();
+
+    assert!(store.snapshot(Some("project-b")).profiles.is_empty());
+    let snapshot = store.snapshot(Some("project-c"));
+    let profile = &snapshot.profiles[0];
+    assert_eq!(profile.project_ids, vec!["project-a", "project-c"]);
+    assert_eq!(profile.name, "Production orders");
+    assert_eq!(profile.host, "db.internal");
+    assert_eq!(profile.password.as_deref(), Some("secret"));
+    assert_eq!(profile.environment, "production");
+    assert_eq!(profile.group.as_deref(), Some("Orders"));
+    assert!(profile.read_only);
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn updating_shared_projects_rejects_an_empty_selection() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-rebind-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let store = DBStore::from_support_dir(support_dir.clone());
+
+    let error = store
+        .update_projects("db-missing".to_string(), vec![String::new()])
+        .unwrap_err();
+
+    assert!(error.contains("at least one root project"));
+    fs::remove_dir_all(support_dir).ok();
+}
+
+#[test]
+fn removing_shared_profile_from_one_project_keeps_other_bindings() {
+    let support_dir = std::env::temp_dir().join(format!("codux-db-detach-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    let store = DBStore::from_support_dir(support_dir.clone());
+    store
+        .upsert(DBProfileUpsertRequest {
+            id: Some("db-shared".to_string()),
+            project_ids: vec!["project-a".to_string(), "project-b".to_string()],
+            name: "Shared".to_string(),
+            engine: "postgres".to_string(),
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            database: "app".to_string(),
+            username: Some("app".to_string()),
+            password: None,
+            ssl_mode: Some("prefer".to_string()),
+            environment: Some("testing".to_string()),
+            group: None,
+            read_only: true,
+        })
+        .unwrap();
+
+    store.delete("project-a", "db-shared".to_string()).unwrap();
+
+    assert!(store.snapshot(Some("project-a")).profiles.is_empty());
+    let project_b = store.snapshot(Some("project-b"));
+    assert_eq!(project_b.profiles.len(), 1);
+    assert_eq!(project_b.profiles[0].project_ids, vec!["project-b"]);
 
     fs::remove_dir_all(support_dir).ok();
 }
@@ -169,7 +346,7 @@ fn concurrent_db_stores_do_not_overwrite_each_other() {
                 store
                     .upsert(DBProfileUpsertRequest {
                         id: Some(format!("db-{index}")),
-                        project_id: "project-a".to_string(),
+                        project_ids: vec!["project-a".to_string()],
                         name: format!("Database {index}"),
                         engine: "postgres".to_string(),
                         host: Some("localhost".to_string()),
@@ -178,6 +355,8 @@ fn concurrent_db_stores_do_not_overwrite_each_other() {
                         username: Some("app".to_string()),
                         password: None,
                         ssl_mode: Some("prefer".to_string()),
+                        environment: Some("development".to_string()),
+                        group: None,
                         read_only: true,
                     })
                     .unwrap();
@@ -209,7 +388,7 @@ fn concurrent_upsert_and_delete_preserve_both_mutations() {
     DBStore::from_support_dir(support_dir.clone())
         .upsert(DBProfileUpsertRequest {
             id: Some("db-delete".to_string()),
-            project_id: "project-a".to_string(),
+            project_ids: vec!["project-a".to_string()],
             name: "Delete me".to_string(),
             engine: "postgres".to_string(),
             host: Some("localhost".to_string()),
@@ -218,6 +397,8 @@ fn concurrent_upsert_and_delete_preserve_both_mutations() {
             username: Some("app".to_string()),
             password: None,
             ssl_mode: Some("prefer".to_string()),
+            environment: Some("development".to_string()),
+            group: None,
             read_only: true,
         })
         .unwrap();
@@ -232,7 +413,7 @@ fn concurrent_upsert_and_delete_preserve_both_mutations() {
         upsert_store
             .upsert(DBProfileUpsertRequest {
                 id: Some("db-new".to_string()),
-                project_id: "project-a".to_string(),
+                project_ids: vec!["project-a".to_string()],
                 name: "New database".to_string(),
                 engine: "postgres".to_string(),
                 host: Some("localhost".to_string()),
@@ -241,6 +422,8 @@ fn concurrent_upsert_and_delete_preserve_both_mutations() {
                 username: Some("app".to_string()),
                 password: None,
                 ssl_mode: Some("prefer".to_string()),
+                environment: Some("development".to_string()),
+                group: None,
                 read_only: true,
             })
             .unwrap();
@@ -265,7 +448,7 @@ fn concurrent_upsert_and_delete_preserve_both_mutations() {
 fn sqlite_profiles_do_not_require_username_or_host() {
     let profile = sanitize_request(DBProfileUpsertRequest {
         id: None,
-        project_id: "project-a".to_string(),
+        project_ids: vec!["project-a".to_string()],
         name: "Local".to_string(),
         engine: "sqlite".to_string(),
         host: None,
@@ -274,6 +457,8 @@ fn sqlite_profiles_do_not_require_username_or_host() {
         username: None,
         password: None,
         ssl_mode: None,
+        environment: Some("development".to_string()),
+        group: None,
         read_only: true,
     })
     .unwrap();

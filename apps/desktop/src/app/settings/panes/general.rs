@@ -297,6 +297,25 @@ pub(super) fn settings_general_pane(
                 settings_row(
                     settings_text(
                         language,
+                        "settings.terminal_link_navigation",
+                        "Terminal Links and Paths",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_link_navigation.help",
+                        "Enable opening terminal URLs and file actions for absolute paths.",
+                    )),
+                    settings_toggle(
+                        "settings-terminal-link-navigation",
+                        settings.terminal_link_navigation,
+                        cx,
+                        |app, window, cx| app.toggle_terminal_link_navigation(window, cx),
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
                         "settings.terminal_trim_trailing_whitespace_on_copy",
                         "Trim Trailing Whitespace on Copy",
                     ),

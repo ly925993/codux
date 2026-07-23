@@ -60,6 +60,10 @@ impl SettingsService {
         self.toggle_terminal_boolean("terminalRightClickPaste", false)
     }
 
+    pub fn toggle_terminal_link_navigation(&self) -> Result<SettingsSummary, String> {
+        self.toggle_terminal_boolean("terminalLinkNavigation", true)
+    }
+
     pub fn toggle_terminal_trim_trailing_whitespace_on_copy(
         &self,
     ) -> Result<SettingsSummary, String> {
@@ -72,7 +76,7 @@ impl SettingsService {
         self.toggle_terminal_boolean("terminalTrimTrailingWhitespaceOnPaste", false)
     }
 
-    /// Keeps opt-in terminal booleans consistent and preserves unknown settings keys.
+    /// Keeps terminal booleans consistent and preserves unknown settings keys.
     fn toggle_terminal_boolean(
         &self,
         key: &str,

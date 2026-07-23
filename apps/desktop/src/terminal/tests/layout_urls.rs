@@ -43,6 +43,30 @@ fn detects_plain_terminal_urls_at_cell() {
     assert_eq!(link.range, 5..33);
     assert!(terminal_link_at_cell(&snapshot, TerminalCellPoint { row: 0, col: 2 }).is_none());
 }
+
+#[test]
+fn detects_plain_terminal_urls_across_soft_wrapped_rows() {
+    let url = "https://example.com/a/very/long/path?x=1";
+    let prefix = "open ";
+    let columns = 12;
+    let mut state = TerminalModel::new_for_test(columns, 6, 100);
+    state.process_bytes(format!("{prefix}{url}").as_bytes());
+    state.handle.publish_snapshot();
+    let snapshot = state.handle.snapshot();
+
+    for url_offset in [2, 18, url.len() - 2] {
+        let click_offset = prefix.len() + url_offset;
+        let link = terminal_link_at_cell(
+            &snapshot,
+            TerminalCellPoint {
+                row: click_offset / columns,
+                col: click_offset % columns,
+            },
+        )
+        .expect("wrapped URL segment under pointer");
+        assert_eq!(link.url, url);
+    }
+}
 #[test]
 fn plain_url_detection_uses_terminal_columns() {
     let row_text = vec![

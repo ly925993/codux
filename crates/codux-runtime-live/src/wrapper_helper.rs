@@ -1012,8 +1012,7 @@ fn public_ssh_profile(profile: &Value) -> Option<Value> {
 }
 
 fn public_db_profile(profile: &Value, project_id: &str) -> Option<Value> {
-    let profile_project_id = string_field(profile, "projectId");
-    if profile_project_id.is_empty() || profile_project_id != project_id {
+    if !db_profile_matches_project(profile, project_id) {
         return None;
     }
     let profile_id = string_field(profile, "id");
@@ -1043,6 +1042,8 @@ fn public_db_profile(profile: &Value, project_id: &str) -> Option<Value> {
         "engine": engine,
         "database": database,
         "endpoint": endpoint,
+        "environment": string_field(profile, "environment"),
+        "group": profile.get("group").and_then(Value::as_str),
         "readOnly": profile.get("readOnly").and_then(Value::as_bool).unwrap_or(false),
     }))
 }
@@ -1065,10 +1066,25 @@ fn selected_db_profile() -> Result<Value, String> {
         .iter()
         .find(|profile| {
             string_field(profile, "id") == profile_id
-                && string_field(profile, "projectId") == project_id
+                && db_profile_matches_project(profile, &project_id)
         })
         .cloned()
         .ok_or_else(|| "codux-db: database profile not found for this project".to_string())
+}
+
+fn db_profile_matches_project(profile: &Value, project_id: &str) -> bool {
+    if project_id.is_empty() {
+        return false;
+    }
+    profile
+        .get("projectIds")
+        .and_then(Value::as_array)
+        .is_some_and(|project_ids| {
+            project_ids
+                .iter()
+                .any(|value| value.as_str() == Some(project_id))
+        })
+        || string_field(profile, "projectId") == project_id
 }
 
 fn db_statement() -> Result<String, String> {
@@ -1855,7 +1871,7 @@ mod tests {
     fn public_db_profile_filters_project_and_redacts_secrets() {
         let profile = serde_json::json!({
             "id": "db-1",
-            "projectId": "project-a",
+            "projectIds": ["project-a", "project-b"],
             "name": "Production",
             "engine": "postgres",
             "host": "db.example.com",
@@ -1874,7 +1890,12 @@ mod tests {
         );
         assert!(public.get("username").is_none());
         assert!(public.get("password").is_none());
-        assert!(public_db_profile(&profile, "project-b").is_none());
+        assert!(public_db_profile(&profile, "project-b").is_some());
+        assert!(public_db_profile(&profile, "project-c").is_none());
+        assert!(db_profile_matches_project(
+            &serde_json::json!({ "projectId": "legacy-project" }),
+            "legacy-project"
+        ));
     }
 
     #[test]

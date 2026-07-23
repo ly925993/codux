@@ -39,11 +39,13 @@ impl CoduxApp {
         state.remote = ready_snapshot.remote.clone();
         // Seed the outbound saved-host registry up front so the status-bar device
         // count is correct on the first frame (the slow tick refreshes it after).
-        let remote_saved_host_ids: Vec<String> = runtime_service
-            .saved_remote_hosts()
-            .into_iter()
-            .map(|host| host.device_id)
+        let remote_saved_hosts = runtime_service.saved_remote_hosts();
+        let remote_saved_host_ids: Vec<String> = remote_saved_hosts
+            .iter()
+            .map(|host| host.device_id.clone())
             .collect();
+        let remote_link_states = runtime_service.remote_controller_link_states();
+        let remote_link_paths = runtime_service.remote_controller_link_paths();
         let (terminal_layout, terminal_runtime) = normalize_terminal_restore_state(
             super::ai_runtime_status::terminal_layout_owner_id(&state).as_deref(),
             state.terminal_layout.clone(),
@@ -210,6 +212,7 @@ impl CoduxApp {
             pet_dex_window: None,
             ssh_profile_editor_window: None,
             db_profile_editor_window: None,
+            db_profile_share_window: None,
             file_picker_window: None,
             file_picker_mode: FilePickerMode::OpenFolder,
             file_picker_target: FilePickerTarget::ProjectEditorPath,
@@ -373,6 +376,7 @@ impl CoduxApp {
             memory_manager_refreshing: false,
             memory_manager_refresh_generation: 0,
             memory_project_profile_refreshing: false,
+            memory_failed_retrying: false,
             performance_refresh_in_flight: false,
             pending_performance_refresh: None,
             today_level_day_start: codux_runtime::ai_history_normalized::local_day_start_seconds(
@@ -391,9 +395,15 @@ impl CoduxApp {
             db_saving: false,
             db_testing: false,
             db_test_result: None,
+            db_share_error: None,
             db_draft_id: None,
-            db_draft_project_id: String::new(),
+            db_draft_project_ids: Vec::new(),
+            db_share_original_project_ids: Vec::new(),
+            db_share_projects: Rc::new(Vec::new()),
+            db_share_scroll_handle: UniformListScrollHandle::new(),
             db_draft_name: String::new(),
+            db_draft_environment: "development".to_string(),
+            db_draft_group: String::new(),
             db_draft_engine: "postgres".to_string(),
             db_draft_host: "localhost".to_string(),
             db_draft_port: "5432".to_string(),
@@ -416,6 +426,7 @@ impl CoduxApp {
             ssh_draft_key_passphrase: String::new(),
             selected_remote_device_id,
             remote_reconnecting: false,
+            remote_operation_in_flight: None,
             remote_pairing_sheet_open: false,
             remote_pairing_creating: false,
             remote_pairing_error: None,
@@ -435,7 +446,10 @@ impl CoduxApp {
             task_section_terminals_collapsed: false,
             task_section_sessions_collapsed: false,
             project_list_state: None,
-            remote_link_states: std::collections::HashMap::new(),
+            remote_link_states,
+            remote_link_refresh_in_flight: false,
+            remote_link_paths,
+            remote_saved_hosts,
             remote_saved_host_ids,
             project_column_view: None,
             task_column_view: None,
@@ -545,6 +559,8 @@ impl CoduxApp {
         self._observe_window_activation = Some(cx.observe_window_activation(
             window,
             move |app, window, cx| {
+                // Keep inactive native controls legible against Codux's transparent dark titlebar.
+                super::macos_window::sync_main_window_control_appearance(window);
                 if !window.is_window_active() {
                     app.main_window_lost_to_external_app = true;
                     cx.defer_in(window, move |app, _window, cx| {
@@ -604,6 +620,10 @@ impl CoduxApp {
             let refresh = codux_runtime::async_runtime::spawn_blocking(move || {
                 let runtime_activity = runtime_service.reload_runtime_activity();
                 let remote = runtime_service.reload_remote();
+                // Re-arming saved host connections reads the host registry and
+                // takes controller locks, so keep the 30-second safety net here
+                // with the rest of the scheduled background refresh.
+                runtime_service.ensure_saved_remote_hosts_connected();
                 RuntimeScheduledRefresh {
                     runtime_activity,
                     remote,

@@ -49,6 +49,16 @@ impl RuntimeService {
         DBStore::from_support_dir(self.support_dir.clone()).upsert(request)
     }
 
+    pub fn update_db_profile_projects(
+        &self,
+        profile_id: String,
+        project_ids: Vec<String>,
+    ) -> Result<DBProfilesSnapshot, String> {
+        // The share picker must not round-trip editable connection fields or credentials.
+        DBStore::from_support_dir(self.support_dir.clone())
+            .update_projects(profile_id, project_ids)
+    }
+
     pub fn delete_db_profile(
         &self,
         project_id: &str,

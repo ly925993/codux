@@ -13,6 +13,7 @@ mod tests {
         assert_eq!(summary.terminal_scrollback_lines, "2000");
         assert!(!summary.terminal_copy_on_select);
         assert!(!summary.terminal_right_click_paste);
+        assert!(summary.terminal_link_navigation);
         assert!(!summary.terminal_trim_trailing_whitespace_on_copy);
         assert!(!summary.terminal_trim_trailing_whitespace_on_paste);
         assert!(summary.wsl_enabled);
@@ -47,6 +48,27 @@ mod tests {
         assert!(persisted.terminal_right_click_paste);
         assert!(persisted.terminal_trim_trailing_whitespace_on_copy);
         assert!(persisted.terminal_trim_trailing_whitespace_on_paste);
+
+        fs::remove_dir_all(support_dir).ok();
+    }
+
+    #[test]
+    fn terminal_link_navigation_defaults_on_and_persists_when_disabled() {
+        let support_dir = temp_dir("settings-terminal-link-navigation");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        assert!(service.reload_settings().terminal_link_navigation);
+        let settings = service
+            .toggle_terminal_link_navigation()
+            .expect("disable terminal link navigation");
+        assert!(!settings.terminal_link_navigation);
+
+        crate::config::flush_all_config_writes();
+        assert!(
+            !SettingsService::new(support_dir.clone())
+                .summary()
+                .terminal_link_navigation
+        );
 
         fs::remove_dir_all(support_dir).ok();
     }

@@ -211,6 +211,29 @@ pub(super) fn settings_icon_button_state(
         .into_any_element()
 }
 
+/// Icon-only actions use the same fixed footprint while background work is in
+/// progress, preventing the device row from shifting when its spinner appears.
+pub(super) fn settings_icon_button_loading_state(
+    id: impl Into<SharedString>,
+    icon: impl Into<Icon>,
+    loading: bool,
+    disabled: bool,
+    cx: &mut Context<CoduxApp>,
+    action: impl Fn(&mut CoduxApp, &gpui::ClickEvent, &mut Window, &mut Context<CoduxApp>) + 'static,
+) -> AnyElement {
+    let icon = icon.into();
+    Button::new(id.into())
+        .compact()
+        .ghost()
+        .loading(loading)
+        .disabled(disabled)
+        .text_color(cx.theme().secondary_foreground)
+        .bg(cx.theme().transparent)
+        .icon(icon.size_3p5().text_color(cx.theme().secondary_foreground))
+        .on_click(cx.listener(action))
+        .into_any_element()
+}
+
 pub(super) fn settings_text_input(
     id: impl Into<SharedString>,
     value: impl Into<String>,

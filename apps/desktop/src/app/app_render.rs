@@ -149,6 +149,7 @@ impl Render for CoduxApp {
                         memory_processing: self.memory_processing
                             || self.state.memory_manager.extraction.running > 0,
                         memory_refreshing: self.memory_manager_refreshing,
+                        memory_failed_retrying: self.memory_failed_retrying,
                         project_profile_refreshing: self.memory_project_profile_refreshing,
                         language: &self.state.settings.language,
                     },
@@ -283,6 +284,19 @@ impl Render for CoduxApp {
                     window,
                     cx,
                 ))
+                .child(self.codux_tooltip_layer(cx));
+            return self
+                .register_child_window_actions(root, cx)
+                .into_any_element();
+        }
+
+        if self.window_mode == AppWindowMode::DbProfileShare {
+            let root = div()
+                .size_full()
+                .text_color(cx.theme().foreground)
+                .bg(cx.theme().background)
+                .on_key_down(cx.listener(Self::on_key_down))
+                .child(db_profile_share_workspace(self, self.db_saving, window, cx))
                 .child(self.codux_tooltip_layer(cx));
             return self
                 .register_child_window_actions(root, cx)

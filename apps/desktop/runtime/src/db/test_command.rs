@@ -44,7 +44,14 @@ pub(super) fn run_db_test_command(
         .arg("--")
         .arg(test_statement(profile))
         .env("CODUX_DB_PROFILES_FILE", profiles_file)
-        .env("CODUX_DB_PROJECT_ID", &profile.project_id)
+        .env(
+            "CODUX_DB_PROJECT_ID",
+            profile
+                .project_ids
+                .first()
+                .map(String::as_str)
+                .unwrap_or(""),
+        )
         .output()
         .map_err(|error| format!("failed to run codux-db test command: {error}"))?;
     if output.status.success() {

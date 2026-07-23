@@ -53,6 +53,9 @@ pub struct AppSettings {
     /// Opt-in because it replaces the standard right-click context-menu gesture.
     #[serde(default)]
     pub terminal_right_click_paste: bool,
+    /// Enabled by default so existing terminal URL and path gestures remain available.
+    #[serde(default = "default_true")]
+    pub terminal_link_navigation: bool,
     /// Removes spaces and tabs only at hard line endings in copied terminal selections.
     #[serde(default)]
     pub terminal_trim_trailing_whitespace_on_copy: bool,

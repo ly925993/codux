@@ -887,6 +887,36 @@ enum TerminalRightClickAction {
     Ignore,
 }
 
+/// Keeps the existing platform shortcut while accepting an explicit Control key on every OS.
+fn terminal_link_modifier_pressed(modifiers: Modifiers) -> bool {
+    modifiers.control || modifiers.secondary()
+}
+
+/// AppKit can surface Control+left-click as a right-button event, so macOS accepts both forms.
+fn terminal_link_click_requested(
+    button: MouseButton,
+    modifiers: Modifiers,
+    control_pressed: bool,
+) -> bool {
+    let primary_click = button == MouseButton::Left
+        || (cfg!(target_os = "macos") && button == MouseButton::Right && control_pressed);
+    primary_click && (control_pressed || modifiers.secondary())
+}
+
+/// Preserves the physical Control key after GPUI rewrites macOS Control+left-click events.
+fn terminal_control_modifier_pressed(
+    event_modifiers: Modifiers,
+    window_modifiers: Modifiers,
+    native_control_pressed: bool,
+) -> bool {
+    event_modifiers.control || window_modifiers.control || native_control_pressed
+}
+
+/// The menu host opens on right-button events; macOS reports Control+click in this form.
+fn terminal_path_menu_requested(button: MouseButton, control_pressed: bool) -> bool {
+    button == MouseButton::Right && control_pressed
+}
+
 /// Resolves the gesture before any clipboard work so remote ownership and TUI mouse mode win.
 fn terminal_right_click_action(
     right_click_paste: bool,

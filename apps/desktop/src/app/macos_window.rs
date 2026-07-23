@@ -123,6 +123,21 @@ pub(crate) fn configure_main_window_controls(_window: &mut Window) {}
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
+pub(crate) fn sync_main_window_control_appearance(window: &mut Window) {
+    let active = window.is_window_active();
+    let Some(ns_window) = appkit_window(window) else {
+        return;
+    };
+    unsafe {
+        sync_native_window_button_tint(ns_window, active);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn sync_main_window_control_appearance(_window: &mut Window) {}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 pub(in crate::app) fn configure_child_window_controls(window: &mut Window) {
     configure_native_window_buttons(window, true);
 }
@@ -142,6 +157,7 @@ pub(in crate::app) fn configure_document_child_window_controls(_window: &mut Win
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
 fn configure_native_window_buttons(window: &mut Window, close_only: bool) {
+    let active = window.is_window_active();
     let Some(ns_window) = appkit_window(window) else {
         return;
     };
@@ -157,6 +173,33 @@ fn configure_native_window_buttons(window: &mut Window, close_only: bool) {
             offset_window_button(close_button);
             offset_window_button(min_button);
             offset_window_button(zoom_button);
+        }
+        // Transparent dark titlebars can render inactive template images almost black.
+        // Apply a neutral tint only while inactive, then restore AppKit's native colors.
+        sync_native_window_button_tint(ns_window, active);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+unsafe fn sync_native_window_button_tint(ns_window: id, active: bool) {
+    let tint = if active {
+        nil
+    } else {
+        unsafe { NSColor::colorWithSRGBRed_green_blue_alpha_(nil, 0.62, 0.65, 0.7, 1.0) }
+    };
+    for button_kind in [
+        NSWindowButton::NSWindowCloseButton,
+        NSWindowButton::NSWindowMiniaturizeButton,
+        NSWindowButton::NSWindowZoomButton,
+    ] {
+        let button = unsafe { ns_window.standardWindowButton_(button_kind) };
+        if button.is_null() {
+            continue;
+        }
+        unsafe {
+            let _: () = msg_send![button, setContentTintColor: tint];
+            let _: () = msg_send![button, setNeedsDisplay: YES];
         }
     }
 }

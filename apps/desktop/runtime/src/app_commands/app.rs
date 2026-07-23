@@ -41,6 +41,9 @@ pub fn app_open_live_log() -> Result<(), String> {
 pub fn app_open_url(url: String) -> Result<(), String> {
     crate::app_info::open_url(&url)
 }
+pub fn app_reveal_path(path: String) -> Result<(), String> {
+    crate::files::reveal_absolute_path(&path)
+}
 pub fn app_request_restart() -> Result<(), String> {
     crate::app_info::request_restart()
 }

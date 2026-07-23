@@ -122,6 +122,22 @@ pub fn file_open(request: FilePathRequest) -> Result<(), String> {
     FilesService::open_path(&request.root_path, &request.path)
 }
 
+/// Opens an absolute directory or reveals an absolute file without routing through a shell.
+pub fn reveal_absolute_path(path: &str) -> Result<(), String> {
+    let target = PathBuf::from(path.trim());
+    if !target.is_absolute() {
+        return Err("Path must be absolute.".to_string());
+    }
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+    if target.is_dir() {
+        open_path(&target)
+    } else {
+        reveal_path(&target)
+    }
+}
+
 pub struct FilesService;
 
 impl FilesService {

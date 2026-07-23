@@ -17,14 +17,49 @@ pub(in crate::app) fn db_section(
     let copy_label = translate(&locale, "db.profile.copy_command", "Copy Command");
     let read_only_label = translate(&locale, "db.profile.mode.read_only", "read-only");
     let read_write_label = translate(&locale, "db.profile.mode.read_write", "read-write");
+    let share_label = translate(&locale, "db.profile.share", "Share to projects");
+    let ungrouped_label = translate(&locale, "db.profile.group.ungrouped", "Ungrouped");
     let profile_labels = DbProfileLabels {
         edit: edit_label,
         remove: remove_label,
         copy: copy_label,
         read_only: read_only_label,
         read_write: read_write_label,
+        share: share_label,
+        environment_unspecified: translate(
+            &locale,
+            "db.profile.environment.unspecified",
+            "Unspecified",
+        ),
+        environment_development: translate(
+            &locale,
+            "db.profile.environment.development",
+            "Development",
+        ),
+        environment_testing: translate(&locale, "db.profile.environment.testing", "Testing"),
+        environment_staging: translate(&locale, "db.profile.environment.staging", "Staging"),
+        environment_production: translate(
+            &locale,
+            "db.profile.environment.production",
+            "Production",
+        ),
+        shared_count: translate(
+            &locale,
+            "db.profile.shared_count",
+            "shared with %@ projects",
+        ),
     };
-    let profiles = Rc::new(db.profiles.clone());
+    let profiles_empty = db.profiles.is_empty();
+    let mut profile_groups = std::collections::BTreeMap::<String, Vec<DBProfileSummary>>::new();
+    // Group the already-loaded snapshot in memory; rendering never performs file or DB I/O.
+    for profile in db.profiles.iter().cloned() {
+        let group = profile
+            .group
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| ungrouped_label.clone());
+        profile_groups.entry(group).or_default().push(profile);
+    }
     let selected_profile_id = selected_profile_id.map(str::to_string);
     let error_row = db.error.as_ref().map(|error| {
         div()
@@ -63,20 +98,35 @@ pub(in crate::app) fn db_section(
                 .p(px(12.0))
                 .relative()
                 .overflow_y_scrollbar()
-                .child(if profiles.is_empty() {
+                .child(if profiles_empty {
                     db_empty_state(empty_label, cx).into_any_element()
                 } else {
                     div()
                         .flex()
                         .flex_col()
-                        .children(profiles.iter().cloned().map(|profile| {
-                            db_profile_row(
-                                profile,
-                                selected_profile_id.as_deref(),
-                                &profile_labels,
-                                cx,
-                            )
-                            .into_any_element()
+                        .children(profile_groups.into_iter().map(|(group, profiles)| {
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .mb(px(6.0))
+                                        .px(px(4.0))
+                                        .text_size(rems(0.6875))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(color(theme::TEXT_MUTED))
+                                        .child(group),
+                                )
+                                .children(profiles.into_iter().map(|profile| {
+                                    db_profile_row(
+                                        profile,
+                                        selected_profile_id.as_deref(),
+                                        &profile_labels,
+                                        cx,
+                                    )
+                                    .into_any_element()
+                                }))
                         }))
                         .into_any_element()
                 })
@@ -122,6 +172,23 @@ struct DbProfileLabels {
     copy: String,
     read_only: String,
     read_write: String,
+    share: String,
+    environment_unspecified: String,
+    environment_development: String,
+    environment_testing: String,
+    environment_staging: String,
+    environment_production: String,
+    shared_count: String,
+}
+
+fn db_environment_badge(environment: &str, labels: &DbProfileLabels) -> (String, u32) {
+    match environment {
+        "development" => (labels.environment_development.clone(), theme::GREEN),
+        "testing" => (labels.environment_testing.clone(), theme::ORANGE),
+        "staging" => (labels.environment_staging.clone(), theme::ACCENT),
+        "production" => (labels.environment_production.clone(), theme::RED),
+        _ => (labels.environment_unspecified.clone(), theme::TEXT_MUTED),
+    }
 }
 
 fn db_profile_row(
@@ -133,6 +200,7 @@ fn db_profile_row(
     let edit_label = labels.edit.clone();
     let remove_label = labels.remove.clone();
     let copy_label = labels.copy.clone();
+    let share_label = labels.share.clone();
     let read_only_label = labels.read_only.clone();
     let read_write_label = labels.read_write.clone();
     let active = selected_profile_id
@@ -143,6 +211,8 @@ fn db_profile_row(
     let menu_profile_id = profile.id.clone();
     let hover_surface = ai_stats_track_surface(cx);
     let app_entity = cx.entity();
+    let (environment_label, environment_tone) = db_environment_badge(&profile.environment, labels);
+    let shared_project_count = profile.project_ids.len();
     div()
         .id(SharedString::from(format!("db-profile-{}", profile.id)))
         .w_full()
@@ -191,11 +261,31 @@ fn db_profile_row(
                 .flex_col()
                 .child(
                     div()
-                        .text_size(rems(0.875))
-                        .line_height(rems(1.125))
-                        .text_color(color(theme::TEXT))
-                        .truncate()
-                        .child(profile.name),
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_size(rems(0.875))
+                                .line_height(rems(1.125))
+                                .text_color(color(theme::TEXT))
+                                .truncate()
+                                .child(profile.name),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(px(5.0))
+                                .py(px(2.0))
+                                .rounded(px(4.0))
+                                .bg(color(environment_tone).opacity(0.14))
+                                .text_size(rems(0.625))
+                                .text_color(color(environment_tone))
+                                .child(environment_label),
+                        ),
                 )
                 .child(
                     div()
@@ -205,14 +295,24 @@ fn db_profile_row(
                         .text_color(color(theme::TEXT_MUTED))
                         .truncate()
                         .child(format!(
-                            "{} · {} · {}",
+                            "{} · {} · {}{}",
                             profile.engine,
                             profile.endpoint,
                             if profile.read_only {
                                 read_only_label
                             } else {
                                 read_write_label
-                            }
+                            },
+                            if shared_project_count > 1 {
+                                format!(
+                                    " · {}",
+                                    labels
+                                        .shared_count
+                                        .replace("%@", &shared_project_count.to_string())
+                                )
+                            } else {
+                                String::new()
+                            },
                         )),
                 ),
         )
@@ -242,6 +342,8 @@ fn db_profile_row(
             let copy_profile_id = menu_profile_id.clone();
             let edit_entity = app_entity.clone();
             let edit_profile_id = menu_profile_id.clone();
+            let share_entity = app_entity.clone();
+            let share_profile_id = menu_profile_id.clone();
             let remove_entity = app_entity.clone();
             let remove_profile_id = menu_profile_id.clone();
 
@@ -260,6 +362,15 @@ fn db_profile_row(
                     .on_click(move |_, _window, cx| {
                         cx.update_entity(&edit_entity, |app, cx| {
                             app.open_selected_db_profile_editor(edit_profile_id.clone(), cx);
+                        });
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(share_label.clone())
+                    .icon(HeroIconName::Share)
+                    .on_click(move |_, _window, cx| {
+                        cx.update_entity(&share_entity, |app, cx| {
+                            app.open_selected_db_profile_share(share_profile_id.clone(), cx);
                         });
                     }),
             )

@@ -15,7 +15,7 @@ pub use helpers::{
 };
 use helpers::{
     db_profiles_file_path_in, display_name, endpoint, load_profiles, sanitize_profiles,
-    sanitize_request,
+    sanitize_project_ids, sanitize_request,
 };
 use test_command::{run_db_test_command, write_test_profile_file};
 pub use types::*;
@@ -54,14 +54,12 @@ impl DBStore {
     }
 
     pub fn upsert(&self, request: DBProfileUpsertRequest) -> Result<DBProfilesSnapshot, String> {
-        let project_id = request.project_id.trim().to_string();
+        let project_id = request.project_ids.first().cloned().unwrap_or_default();
         let profile = sanitize_request(request)?;
         let profiles = self.document_store.update(|document| {
             let mut profiles = profiles_from_document(document);
-            if let Some(index) = profiles
-                .iter()
-                .position(|item| item.project_id == profile.project_id && item.id == profile.id)
-            {
+            // Profile IDs are global so a connection can be reassigned without duplicating secrets.
+            if let Some(index) = profiles.iter().position(|item| item.id == profile.id) {
                 profiles[index] = profile;
             } else {
                 profiles.push(profile);
@@ -72,6 +70,30 @@ impl DBStore {
         Ok(snapshot_from_profiles(profiles, Some(&project_id)))
     }
 
+    pub fn update_projects(
+        &self,
+        profile_id: String,
+        project_ids: Vec<String>,
+    ) -> Result<DBProfilesSnapshot, String> {
+        let snapshot_project_id = project_ids.first().cloned().unwrap_or_default();
+        let project_ids = sanitize_project_ids(&project_ids)?;
+        let profiles = self.document_store.update(|document| {
+            let mut profiles = profiles_from_document(document);
+            let profile = profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)
+                .ok_or_else(|| "Database profile is no longer available.".to_string())?;
+            if profile.project_ids != project_ids {
+                // Sharing changes bindings only; connection fields and stored credentials stay intact.
+                profile.project_ids = project_ids;
+                profile.updated_at = chrono::Utc::now().timestamp();
+                *document = serde_json::to_value(&profiles).map_err(|error| error.to_string())?;
+            }
+            Ok(profiles)
+        })?;
+        Ok(snapshot_from_profiles(profiles, Some(&snapshot_project_id)))
+    }
+
     pub fn delete(
         &self,
         project_id: &str,
@@ -79,8 +101,16 @@ impl DBStore {
     ) -> Result<DBProfilesSnapshot, String> {
         let profiles = self.document_store.update(|document| {
             let mut profiles = profiles_from_document(document);
-            profiles
-                .retain(|profile| !(profile.project_id == project_id && profile.id == profile_id));
+            profiles.retain_mut(|profile| {
+                if profile.id != profile_id
+                    || !profile.project_ids.iter().any(|id| id == project_id)
+                {
+                    return true;
+                }
+                // Removing a shared connection from one project must not delete it for others.
+                profile.project_ids.retain(|id| id != project_id);
+                !profile.project_ids.is_empty()
+            });
             *document = serde_json::to_value(&profiles).map_err(|error| error.to_string())?;
             Ok(profiles)
         })?;
@@ -116,7 +146,7 @@ fn snapshot_from_profiles(
         .into_iter()
         .filter(|profile| {
             project_id
-                .map(|project_id| profile.project_id == project_id)
+                .map(|project_id| profile.project_ids.iter().any(|id| id == project_id))
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
@@ -154,16 +184,18 @@ impl DBService {
             .filter(|profile| {
                 self.project_id
                     .as_deref()
-                    .map(|project_id| profile.project_id == project_id)
+                    .map(|project_id| profile.project_ids.iter().any(|id| id == project_id))
                     .unwrap_or(false)
             })
             .map(|profile| DBProfileSummary {
                 name: display_name(&profile),
                 endpoint: endpoint(&profile),
                 id: profile.id,
-                project_id: profile.project_id,
+                project_ids: profile.project_ids,
                 database: profile.database,
                 engine: profile.engine,
+                environment: profile.environment,
+                group: profile.group,
                 read_only: profile.read_only,
                 updated_at: profile.updated_at,
             })

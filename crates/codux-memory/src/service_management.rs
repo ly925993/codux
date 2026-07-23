@@ -28,6 +28,26 @@ impl MemoryService {
         self.extraction_status_snapshot()
     }
 
+    pub fn retry_all_failed_extraction_tasks(
+        &self,
+    ) -> Result<MemoryExtractionStatusSnapshot, String> {
+        self.ensure_queue_schema()?;
+        let conn = self.open_connection()?;
+        // One indexed update keeps large failure queues O(n) in SQLite without per-task I/O.
+        conn.execute(
+            r#"
+            UPDATE memory_extraction_queue
+            SET status = 'pending',
+                error = NULL,
+                enqueued_at = ?1
+            WHERE status = 'failed';
+            "#,
+            params![now_seconds()],
+        )
+        .map_err(|error| error.to_string())?;
+        self.extraction_status_snapshot()
+    }
+
     pub fn set_entry_status(
         &self,
         project_id: Option<&str>,

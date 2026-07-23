@@ -136,6 +136,120 @@ fn right_click_action_preserves_menu_mouse_reporting_and_remote_ownership() {
         TerminalRightClickAction::Ignore
     );
 }
+
+#[test]
+fn terminal_links_accept_control_and_the_platform_modifier() {
+    let control = Modifiers {
+        control: true,
+        ..Modifiers::default()
+    };
+
+    assert!(terminal_link_modifier_pressed(control));
+    assert!(terminal_link_modifier_pressed(Modifiers::secondary_key()));
+    assert!(!terminal_link_modifier_pressed(Modifiers::default()));
+    let control_pressed = terminal_control_modifier_pressed(control, Modifiers::default(), false);
+    assert!(terminal_link_click_requested(
+        MouseButton::Left,
+        control,
+        control_pressed
+    ));
+    assert_eq!(
+        terminal_link_click_requested(MouseButton::Right, control, control_pressed),
+        cfg!(target_os = "macos")
+    );
+    assert!(!terminal_link_click_requested(
+        MouseButton::Right,
+        Modifiers::default(),
+        false
+    ));
+    assert_eq!(
+        terminal_link_click_requested(MouseButton::Right, Modifiers::default(), true),
+        cfg!(target_os = "macos")
+    );
+}
+
+#[test]
+fn terminal_control_click_survives_gpui_macos_normalization() {
+    let control = Modifiers {
+        control: true,
+        ..Modifiers::default()
+    };
+    let cleared = Modifiers::default();
+
+    assert!(terminal_control_modifier_pressed(control, cleared, false));
+    assert!(terminal_control_modifier_pressed(cleared, cleared, true));
+    assert!(!terminal_control_modifier_pressed(cleared, cleared, false));
+}
+
+#[test]
+fn terminal_path_menu_requires_control_right_click() {
+    let control_pressed = true;
+
+    assert!(terminal_path_menu_requested(
+        MouseButton::Right,
+        control_pressed
+    ));
+    assert!(!terminal_path_menu_requested(
+        MouseButton::Left,
+        control_pressed
+    ));
+    assert!(!terminal_path_menu_requested(MouseButton::Right, false));
+}
+
+#[test]
+fn terminal_path_detection_handles_delimiters_quotes_and_escaped_spaces() {
+    let cases = [
+        (
+            "built /Users/example/codux/target/release/codux, done",
+            "/Users/example/codux/target/release/codux",
+        ),
+        (
+            "open '/Volumes/Virtual Machine/codux target' next",
+            "/Volumes/Virtual Machine/codux target",
+        ),
+        (
+            "open /Volumes/Virtual\\ Machine/codux\\ target next",
+            "/Volumes/Virtual Machine/codux target",
+        ),
+    ];
+
+    for (line, expected) in cases {
+        let row_text: Vec<(usize, char)> =
+            line.char_indices().map(|(index, ch)| (index, ch)).collect();
+        let click_col = line.find("codux").expect("path segment exists");
+        let (path, _) = terminal_plain_path_at(&row_text, click_col).expect("path under pointer");
+        assert_eq!(path, expected);
+    }
+
+    let row_text: Vec<(usize, char)> = "https://example.com/path"
+        .char_indices()
+        .map(|(index, ch)| (index, ch))
+        .collect();
+    assert!(terminal_plain_path_at(&row_text, 20).is_none());
+}
+
+#[test]
+fn terminal_path_detection_follows_soft_wrapped_rows() {
+    let path = "/Users/example/codux/target/release/codux";
+    let prefix = "open ";
+    let columns = 16;
+    let mut state = TerminalModel::new_for_test(columns, 8, 100);
+    state.process_bytes(format!("{prefix}{path}").as_bytes());
+    state.handle.publish_snapshot();
+    let snapshot = state.handle.snapshot();
+    let click_offset = prefix.len() + path.find("target").expect("target segment");
+
+    let detected = terminal_path_at_cell(
+        &snapshot,
+        TerminalCellPoint {
+            row: click_offset / columns,
+            col: click_offset % columns,
+        },
+    )
+    .expect("wrapped path under pointer");
+
+    assert_eq!(detected.path, path);
+}
 #[test]
 fn double_click_selects_word_under_cell() {
     let mut state = TerminalModel::new_for_test(20, 4, 100);

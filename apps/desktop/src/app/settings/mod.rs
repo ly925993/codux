@@ -3,6 +3,7 @@ use super::{CoduxApp, UiRegion, empty_label};
 use crate::app::{
     AIProviderTestResult,
     app_select::{CoduxSelectConfig, CoduxSelectOption, codux_select},
+    app_state::RemoteSettingsOperation,
     scroll_compat::ScrollableElement,
 };
 use crate::heroicons::HeroIconName;
@@ -323,7 +324,17 @@ impl CoduxApp {
             )
             .when_some(
                 self.state.remote.pending_pairing_list.first().cloned(),
-                |this, pairing| this.child(remote_pending_pairing_overlay(pairing, language, cx)),
+                |this, pairing| {
+                    let deciding = self
+                        .remote_operation_in_flight
+                        .as_ref()
+                        .is_some_and(|operation| operation.is_pairing_decision(&pairing.id));
+                    let busy =
+                        self.remote_operation_in_flight.is_some() || self.remote_reconnecting;
+                    this.child(remote_pending_pairing_overlay(
+                        pairing, busy, deciding, language, cx,
+                    ))
+                },
             )
             .when(self.remote_connect_open, |this| {
                 this.child(remote_connect_overlay(
@@ -420,25 +431,21 @@ fn settings_pane_body(
             window,
             cx,
         ),
-        SettingsPane::Remote => {
-            let saved_hosts = app.runtime_service.saved_remote_hosts();
-            let link_states = app.runtime_service.remote_controller_link_states();
-            let link_paths = app.runtime_service.remote_controller_link_paths();
-            settings_remote_pane(
-                SettingsRemotePaneInput {
-                    settings: &app.state.settings,
-                    remote: &app.state.remote,
-                    saved_hosts: &saved_hosts,
-                    link_states: &link_states,
-                    link_paths: &link_paths,
-                    language: app.state.settings.language.as_str(),
-                    remote_reconnecting: app.remote_reconnecting,
-                    remote_pairing_creating: app.remote_pairing_creating,
-                },
-                window,
-                cx,
-            )
-        }
+        SettingsPane::Remote => settings_remote_pane(
+            SettingsRemotePaneInput {
+                settings: &app.state.settings,
+                remote: &app.state.remote,
+                saved_hosts: &app.remote_saved_hosts,
+                link_states: &app.remote_link_states,
+                link_paths: &app.remote_link_paths,
+                language: app.state.settings.language.as_str(),
+                remote_reconnecting: app.remote_reconnecting,
+                remote_pairing_creating: app.remote_pairing_creating,
+                operation: app.remote_operation_in_flight.as_ref(),
+            },
+            window,
+            cx,
+        ),
         SettingsPane::Shortcuts => settings_shortcuts_pane(
             &app.state.settings,
             app.recording_shortcut_id.as_deref(),

@@ -394,6 +394,8 @@ pub(super) fn remote_pairing_cancel_button(
 
 pub(in crate::app::settings) fn remote_pending_pairing_overlay(
     pairing: RemotePendingPairing,
+    busy: bool,
+    deciding: bool,
     language: &str,
     cx: &mut Context<CoduxApp>,
 ) -> AnyElement {
@@ -488,6 +490,8 @@ pub(in crate::app::settings) fn remote_pending_pairing_overlay(
                         .child(
                             Button::new("settings-remote-pending-reject")
                                 .ghost()
+                                .loading(deciding)
+                                .disabled(busy)
                                 .text_color(cx.theme().danger)
                                 .on_click(cx.listener(move |app, _event, window, cx| {
                                     app.reject_remote_pairing(reject_id.clone(), window, cx)
@@ -506,6 +510,8 @@ pub(in crate::app::settings) fn remote_pending_pairing_overlay(
                         .child(
                             Button::new("settings-remote-pending-confirm")
                                 .primary()
+                                .loading(deciding)
+                                .disabled(busy)
                                 .text_color(cx.theme().primary_foreground)
                                 .on_click(cx.listener(move |app, _event, window, cx| {
                                     app.confirm_remote_pairing(confirm_id.clone(), window, cx)

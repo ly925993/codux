@@ -69,8 +69,10 @@ impl CoduxApp {
 
     pub(super) fn apply_db_draft(&mut self, profile: DBConnectionProfile) {
         self.db_draft_id = Some(profile.id);
-        self.db_draft_project_id = profile.project_id;
+        self.db_draft_project_ids = profile.project_ids;
         self.db_draft_name = profile.name;
+        self.db_draft_environment = profile.environment;
+        self.db_draft_group = profile.group.unwrap_or_default();
         self.db_draft_engine = profile.engine;
         self.db_draft_host = profile.host;
         self.db_draft_port = profile.port.to_string();
@@ -89,8 +91,10 @@ impl CoduxApp {
             .map(|project| project.id.clone())
             .unwrap_or_default();
         self.db_draft_id = None;
-        self.db_draft_project_id = project_id;
+        self.db_draft_project_ids = vec![project_id];
         self.db_draft_name.clear();
+        self.db_draft_environment = "development".to_string();
+        self.db_draft_group.clear();
         self.db_draft_engine = "postgres".to_string();
         self.db_draft_host = "localhost".to_string();
         self.db_draft_port = "5432".to_string();
@@ -113,6 +117,8 @@ impl CoduxApp {
     ) {
         match field {
             "name" => self.db_draft_name = value,
+            "environment" => self.db_draft_environment = value,
+            "group" => self.db_draft_group = value,
             "engine" => {
                 self.db_draft_engine = value;
                 if self.db_draft_engine == "mysql" && self.db_draft_port.trim() == "5432" {
@@ -140,6 +146,112 @@ impl CoduxApp {
         self.invalidate_db_panel(cx);
     }
 
+    pub(super) fn toggle_db_share_project(&mut self, project_id: String, cx: &mut Context<Self>) {
+        let current_project_id = self
+            .state
+            .selected_project
+            .as_ref()
+            .map(|project| project.id.as_str());
+        if current_project_id == Some(project_id.as_str()) {
+            return;
+        }
+        if self.db_draft_project_ids.iter().any(|id| id == &project_id) {
+            self.db_draft_project_ids.retain(|id| id != &project_id);
+        } else {
+            self.db_draft_project_ids.push(project_id);
+        }
+        self.db_share_error = None;
+        // Checkbox changes are local until Save, so selection remains responsive with no I/O.
+        cx.notify();
+    }
+
+    pub(super) fn save_db_profile_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db_saving {
+            return;
+        }
+        let Some(profile_id) = self.db_draft_id.clone() else {
+            self.db_share_error = Some(self.db_text(
+                "db.profile.unavailable",
+                "Database profile is no longer available",
+            ));
+            cx.notify();
+            return;
+        };
+        let mut project_ids = self.db_draft_project_ids.clone();
+        if let Some(current_project_id) = self
+            .state
+            .selected_project
+            .as_ref()
+            .map(|project| project.id.clone())
+        {
+            project_ids.retain(|project_id| project_id != &current_project_id);
+            // The project that opened the picker remains bound and drives the refreshed snapshot.
+            project_ids.insert(0, current_project_id);
+        }
+        let service = self.runtime_service.clone();
+        let window_handle = window.window_handle();
+        self.db_saving = true;
+        self.db_share_error = None;
+        self.status_message = self.db_text("db.profile.share_saving", "Saving shared projects...");
+        self.runtime_trace("database", "db_profile_share queued");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                let started_at = std::time::Instant::now();
+                service.runtime_trace_frontend("database", "db_profile_share start");
+                let result = service.update_db_profile_projects(profile_id, project_ids);
+                service.runtime_trace_frontend(
+                    "database",
+                    &format!(
+                        "db_profile_share {} elapsed_ms={}",
+                        if result.is_ok() { "ok" } else { "failed" },
+                        started_at.elapsed().as_millis()
+                    ),
+                );
+                result
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to join database sharing save: {error}")));
+
+            if result.is_ok() {
+                publish_child_window_update(ChildWindowUpdateKind::Database);
+            }
+            let _ = window_handle.update(cx, |_root, window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.apply_db_profile_share_result(result, window, cx);
+                });
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn apply_db_profile_share_result(
+        &mut self,
+        result: Result<DBProfilesSnapshot, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.db_saving = false;
+        match result {
+            Ok(_) => {
+                self.status_message =
+                    self.db_text("db.profile.share_saved", "Shared projects updated");
+                if self.window_mode == AppWindowMode::DbProfileShare {
+                    window.remove_window();
+                }
+            }
+            Err(error) => {
+                let prefix = self.db_text(
+                    "db.profile.share_failed",
+                    "Failed to update shared projects",
+                );
+                self.status_message = format!("{prefix}: {error}");
+                self.db_share_error = Some(self.status_message.clone());
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn db_draft_request(&self) -> Result<DBProfileUpsertRequest, String> {
         let port = self.db_draft_port.trim().parse::<u16>().map_err(|_| {
             self.db_text(
@@ -147,9 +259,23 @@ impl CoduxApp {
                 "Database port must be a number from 1 to 65535.",
             )
         })?;
+        let mut project_ids = self.db_draft_project_ids.clone();
+        if let Some(current_project_id) = self
+            .state
+            .selected_project
+            .as_ref()
+            .map(|project| project.id.as_str())
+            && let Some(index) = project_ids
+                .iter()
+                .position(|project_id| project_id == current_project_id)
+        {
+            // Keep the current project first so the returned snapshot refreshes the active view.
+            let current_project_id = project_ids.remove(index);
+            project_ids.insert(0, current_project_id);
+        }
         Ok(DBProfileUpsertRequest {
             id: self.db_draft_id.clone(),
-            project_id: self.db_draft_project_id.clone(),
+            project_ids,
             name: self.db_draft_name.clone(),
             engine: self.db_draft_engine.clone(),
             host: Some(self.db_draft_host.clone()),
@@ -158,6 +284,8 @@ impl CoduxApp {
             username: Some(self.db_draft_username.clone()),
             password: Some(self.db_draft_password.clone()),
             ssl_mode: Some(self.db_draft_ssl_mode.clone()),
+            environment: Some(self.db_draft_environment.clone()),
+            group: Some(self.db_draft_group.clone()),
             read_only: self.db_draft_read_only,
         })
     }
@@ -272,8 +400,10 @@ impl CoduxApp {
             Ok(_) => {
                 self.reload_selected_project_db();
                 self.normalize_selected_db_profile();
-                self.status_message =
-                    self.db_text("db.profile.deleted", "Database profile deleted");
+                self.status_message = self.db_text(
+                    "db.profile.removed_from_project",
+                    "Database profile removed from current project",
+                );
             }
             Err(error) => {
                 self.status_message = format!("failed to delete database profile: {error}");

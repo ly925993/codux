@@ -69,6 +69,10 @@ fn summary_from_raw(raw: &Map<String, Value>) -> SettingsSummary {
             .get("terminalRightClickPaste")
             .and_then(Value::as_bool)
             .unwrap_or(defaults.terminal_right_click_paste),
+        terminal_link_navigation: raw
+            .get("terminalLinkNavigation")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.terminal_link_navigation),
         terminal_trim_trailing_whitespace_on_copy: raw
             .get("terminalTrimTrailingWhitespaceOnCopy")
             .and_then(Value::as_bool)

@@ -134,6 +134,7 @@ impl Default for AppSettings {
             terminal_scrollback_lines: default_terminal_scrollback_lines(),
             terminal_copy_on_select: false,
             terminal_right_click_paste: false,
+            terminal_link_navigation: true,
             terminal_trim_trailing_whitespace_on_copy: false,
             terminal_trim_trailing_whitespace_on_paste: false,
             terminal_paste_images_as_paths: default_terminal_paste_images_as_paths(),

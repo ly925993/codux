@@ -41,10 +41,7 @@ use codux_runtime::{
         ProjectCreateRequest, ProjectDefaultPushRemoteRequest, ProjectReorderRequest,
         ProjectRuntimeTarget, ProjectUpdateRequest,
     },
-    remote::{
-        RemoteDeviceSummary, RemoteHostEvent, RemotePairingInfo, RemotePairingPollResult,
-        RemoteSummary,
-    },
+    remote::{RemoteHostEvent, RemotePairingInfo, RemotePairingPollResult, RemoteSummary},
     runtime_activity::RuntimeActivitySummary,
     runtime_bridge::RuntimeInventory,
     runtime_state::{FileEntry, FileKind, ProjectInfo, RuntimeService, RuntimeState},
@@ -108,6 +105,7 @@ mod app_select;
 mod app_state;
 mod db_actions;
 mod db_profile_editor;
+mod db_profile_share;
 mod desktop_pet;
 mod file_actions;
 mod file_editor;
@@ -206,6 +204,7 @@ use self::{
         worktree_summary_has_rows, worktree_terminal_storage_key,
     },
     db_profile_editor::db_profile_editor_workspace,
+    db_profile_share::db_profile_share_workspace,
     desktop_pet::*,
     formatting::compact_number,
     project_column::{ProjectColumnView, ProjectListState},

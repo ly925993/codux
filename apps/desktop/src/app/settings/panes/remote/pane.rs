@@ -13,6 +13,7 @@ pub(in crate::app::settings) struct SettingsRemotePaneInput<'a> {
     pub(in crate::app::settings) language: &'a str,
     pub(in crate::app::settings) remote_reconnecting: bool,
     pub(in crate::app::settings) remote_pairing_creating: bool,
+    pub(in crate::app::settings) operation: Option<&'a RemoteSettingsOperation>,
 }
 
 pub(in crate::app::settings) fn settings_remote_pane(
@@ -29,13 +30,18 @@ pub(in crate::app::settings) fn settings_remote_pane(
         language,
         remote_reconnecting,
         remote_pairing_creating,
+        operation,
     } = input;
+    // Reconnect and settings mutations share the same transport/configuration
+    // resources, so all conflicting controls remain disabled for either phase.
+    let remote_busy = operation.is_some() || remote_reconnecting;
+    let relay_saving = matches!(operation, Some(RemoteSettingsOperation::Relay));
     let mut device_rows: Vec<AnyElement> = remote
         .device_list
         .iter()
         .map(|device| {
-            let device_id = device.id.clone();
             let remove_id = device.id.clone();
+            let removing = operation.is_some_and(|operation| operation.is_revoke(&device.id));
             div()
                 .id(SharedString::from(format!(
                     "settings-remote-device-{}",
@@ -47,10 +53,6 @@ pub(in crate::app::settings) fn settings_remote_pane(
                 .items_center()
                 .justify_between()
                 .gap(px(18.0))
-                .cursor_pointer()
-                .on_click(cx.listener(move |app, _event, window, cx| {
-                    app.select_remote_device(device_id.clone(), window, cx)
-                }))
                 .child(
                     div()
                         .min_w_0()
@@ -119,14 +121,14 @@ pub(in crate::app::settings) fn settings_remote_pane(
                                 theme::TEXT_DIM,
                             )
                         })
-                        .child(settings_icon_button_state(
+                        .child(settings_icon_button_loading_state(
                             SharedString::from(format!("settings-remote-remove-{}", device.id)),
                             HeroIconName::Trash,
-                            false,
+                            removing,
+                            remote_busy,
                             cx,
-                            move |app, _event, window, cx| {
-                                app.select_remote_device(remove_id.clone(), window, cx);
-                                app.revoke_selected_remote_device(window, cx);
+                            move |app, _event, _window, cx| {
+                                app.revoke_remote_device(remove_id.clone(), cx);
                             },
                         )),
                 )
@@ -138,6 +140,7 @@ pub(in crate::app::settings) fn settings_remote_pane(
     // controller) share the same list, tagged "Host", with a Forget action.
     for host in saved_hosts {
         let device_id = host.device_id.clone();
+        let forgetting = operation.is_some_and(|operation| operation.is_forget(&host.device_id));
         let name = if host.host_name.trim().is_empty() {
             host.host_id.clone()
         } else {
@@ -205,13 +208,14 @@ pub(in crate::app::settings) fn settings_remote_pane(
                             link_paths.get(host.device_id.as_str()).copied(),
                             language,
                         ))
-                        .child(settings_icon_button_state(
+                        .child(settings_icon_button_loading_state(
                             SharedString::from(format!(
                                 "settings-remote-forget-{}",
                                 host.device_id
                             )),
                             HeroIconName::Trash,
-                            false,
+                            forgetting,
+                            remote_busy,
                             cx,
                             move |app, _event, _window, cx| {
                                 app.forget_remote_host_device(device_id.clone(), cx)
@@ -257,9 +261,10 @@ pub(in crate::app::settings) fn settings_remote_pane(
                     settings_row(
                         settings_text(language, "settings.remote.enabled", "Enable Remote Host"),
                         None,
-                        settings_toggle(
+                        settings_toggle_state(
                             "settings-remote-enabled",
                             remote.enabled,
+                            remote_busy,
                             cx,
                             |app, window, cx| app.toggle_remote_host(window, cx),
                         ),
@@ -270,7 +275,14 @@ pub(in crate::app::settings) fn settings_remote_pane(
                         // relay row (one card slot), and only when "custom" — so
                         // there's no empty slot drawing a stray separator.
                         let custom = (settings.remote_relay_preset == "custom").then(|| {
-                            settings_remote_relay_custom_fields(settings, window, cx, language)
+                            settings_remote_relay_custom_fields(
+                                settings,
+                                remote_busy,
+                                relay_saving,
+                                window,
+                                cx,
+                                language,
+                            )
                         });
                         let relay_row = settings_row(
                             settings_text(language, "settings.remote.relay_mode", "Relay Network"),
@@ -279,13 +291,13 @@ pub(in crate::app::settings) fn settings_remote_pane(
                                 "settings.remote.relay_mode.help",
                                 "Changing the relay requires pairing again.",
                             )),
-                            settings_select_impl(
+                            settings_select_state(
                                 "settings-remote-relay-preset",
                                 settings.remote_relay_preset.as_str(),
                                 remote_relay_preset_options(language),
+                                (remote_busy, language),
                                 window,
                                 cx,
-                                language,
                                 |app, value, window, cx| {
                                     app.set_remote_relay_preset(value, window, cx)
                                 },
@@ -324,7 +336,7 @@ pub(in crate::app::settings) fn settings_remote_pane(
                             "settings-remote-reconnect",
                             settings_text(language, "settings.remote.reconnect", "Reconnect"),
                             remote_reconnecting,
-                            !remote.enabled,
+                            !remote.enabled || remote_busy,
                             cx,
                             |app, _event, window, cx| app.reconnect_remote(window, cx),
                         ))
@@ -348,13 +360,14 @@ pub(in crate::app::settings) fn settings_remote_pane(
                         .gap(px(8.0))
                         .child(div().child(remote_add_dropdown(
                             language,
-                            remote_pairing_creating || !remote.enabled,
+                            remote_pairing_creating || !remote.enabled || remote_busy,
                             cx,
                         )))
-                        .child(settings_icon_button_state(
+                        .child(settings_icon_button_loading_state(
                             "settings-remote-refresh",
                             HeroIconName::ArrowPath,
-                            !remote.enabled,
+                            matches!(operation, Some(RemoteSettingsOperation::Refresh)),
+                            !remote.enabled || remote_busy,
                             cx,
                             |app, _event, window, cx| app.refresh_remote_devices(window, cx),
                         ))

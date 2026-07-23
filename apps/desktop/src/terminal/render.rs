@@ -205,15 +205,59 @@ fn terminal_context_menu(
     language: &str,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    {
+    let context_path = {
         let state = view.read(cx);
         if state.context_menu_suppressed || !state.session.local_viewport_owns() {
             return menu;
         }
-    }
+        state.context_menu_path.clone()
+    };
     let has_selection = view.read(cx).has_selection(cx);
     let translate =
         |key: &str, default: &str| codux_runtime::i18n::translate(language, key, default);
+    let mut menu = menu;
+    if let Some(context_path) = context_path {
+        let reveal_path = context_path.path.clone();
+        let copy_path = context_path.path;
+        let reveal_view = view.clone();
+        let copy_path_view = view.clone();
+        menu = menu
+            .item(
+                PopupMenuItem::new(translate(
+                    "files.panel.reveal_finder",
+                    "Show in File Manager",
+                ))
+                .icon(HeroIconName::FolderOpen)
+                .on_click(move |_, window, cx| {
+                    let reveal_path_task = reveal_path.clone();
+                    // Filesystem metadata on disconnected mounts can block, so the menu action
+                    // delegates both validation and the system file-manager launch.
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Err(error) = codux_runtime::app_commands::app_reveal_path(
+                                reveal_path_task.clone(),
+                            ) {
+                                eprintln!(
+                                    "failed to reveal terminal path {reveal_path_task}: {error}"
+                                );
+                            }
+                        })
+                        .detach();
+                    let focus_handle = reveal_view.read(cx).focus_handle.clone();
+                    window.focus(&focus_handle, cx);
+                }),
+            )
+            .item(
+                PopupMenuItem::new(translate("files.panel.copy_path", "Copy Path"))
+                    .icon(HeroIconName::DocumentDuplicate)
+                    .on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()));
+                        let focus_handle = copy_path_view.read(cx).focus_handle.clone();
+                        window.focus(&focus_handle, cx);
+                    }),
+            )
+            .separator();
+    }
     let copy_view = view.clone();
     let paste_view = view.clone();
     let select_all_view = view.clone();

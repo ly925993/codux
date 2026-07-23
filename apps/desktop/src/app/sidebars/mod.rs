@@ -459,11 +459,13 @@ fn db_fingerprint(db: &DBSummary) -> u64 {
             .map(|profile| {
                 (
                     profile.id.clone(),
-                    profile.project_id.clone(),
+                    profile.project_ids.clone(),
                     profile.name.clone(),
                     profile.engine.clone(),
                     profile.endpoint.clone(),
                     profile.database.clone(),
+                    profile.environment.clone(),
+                    profile.group.clone(),
                     profile.read_only,
                     profile.updated_at,
                 )

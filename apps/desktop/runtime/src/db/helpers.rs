@@ -34,7 +34,7 @@ pub(super) fn render_db_launch_context_for_profiles(
     codux_db_command: Option<String>,
 ) -> Option<String> {
     let project_id = project_id.and_then(normalized)?;
-    profiles.retain(|profile| profile.project_id == project_id);
+    profiles.retain(|profile| profile.project_ids.iter().any(|id| id == &project_id));
     if profiles.is_empty() {
         return None;
     }
@@ -65,7 +65,7 @@ pub(super) fn sanitize_profiles(profiles: Vec<DBConnectionProfile>) -> Vec<DBCon
             let updated_at = profile.updated_at;
             sanitize_request(DBProfileUpsertRequest {
                 id: Some(profile.id),
-                project_id: profile.project_id,
+                project_ids: profile.project_ids,
                 name: profile.name,
                 engine: profile.engine,
                 host: Some(profile.host),
@@ -74,6 +74,8 @@ pub(super) fn sanitize_profiles(profiles: Vec<DBConnectionProfile>) -> Vec<DBCon
                 username: Some(profile.username),
                 password: profile.password,
                 ssl_mode: Some(profile.ssl_mode),
+                environment: Some(profile.environment),
+                group: profile.group,
                 read_only: profile.read_only,
             })
             .ok()
@@ -89,8 +91,7 @@ pub(super) fn sanitize_profiles(profiles: Vec<DBConnectionProfile>) -> Vec<DBCon
 pub(super) fn sanitize_request(
     request: DBProfileUpsertRequest,
 ) -> Result<DBConnectionProfile, String> {
-    let project_id = normalized(&request.project_id)
-        .ok_or_else(|| "Database profile must be attached to a root project.".to_string())?;
+    let project_ids = sanitize_project_ids(&request.project_ids)?;
     let engine = normalized(&request.engine)
         .unwrap_or_else(|| "postgres".to_string())
         .to_ascii_lowercase();
@@ -128,13 +129,27 @@ pub(super) fn sanitize_request(
         .as_deref()
         .and_then(normalized)
         .unwrap_or_else(|| "prefer".to_string());
+    let environment = request
+        .environment
+        .as_deref()
+        .and_then(normalized)
+        .unwrap_or_else(|| "unspecified".to_string())
+        .to_ascii_lowercase();
+    let environment = match environment.as_str() {
+        "dev" | "development" => "development".to_string(),
+        "test" | "testing" => "testing".to_string(),
+        "stage" | "staging" => "staging".to_string(),
+        "prod" | "production" => "production".to_string(),
+        "unspecified" => environment,
+        _ => return Err("Database environment is not supported.".to_string()),
+    };
 
     Ok(DBConnectionProfile {
         id: request
             .id
             .and_then(|value| normalized(&value))
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
-        project_id,
+        project_ids,
         name: request.name.trim().to_string(),
         engine,
         host,
@@ -143,9 +158,25 @@ pub(super) fn sanitize_request(
         username,
         password: request.password.and_then(|value| normalized(&value)),
         ssl_mode,
+        environment,
+        group: request.group.as_deref().and_then(normalized),
         read_only: request.read_only,
         updated_at: Utc::now().timestamp(),
     })
+}
+
+pub(super) fn sanitize_project_ids(project_ids: &[String]) -> Result<Vec<String>, String> {
+    // Stable ordering keeps persisted bindings deterministic across both desktop platforms.
+    let mut project_ids = project_ids
+        .iter()
+        .filter_map(|project_id| normalized(project_id))
+        .collect::<Vec<_>>();
+    project_ids.sort();
+    project_ids.dedup();
+    if project_ids.is_empty() {
+        return Err("Database profile must be attached to at least one root project.".to_string());
+    }
+    Ok(project_ids)
 }
 
 pub(super) fn default_port(engine: &str) -> u16 {

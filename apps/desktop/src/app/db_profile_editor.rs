@@ -7,6 +7,14 @@ struct DbProfileEditorLabels {
     edit: String,
     name: String,
     name_placeholder: String,
+    environment: String,
+    environment_unspecified: String,
+    environment_development: String,
+    environment_testing: String,
+    environment_staging: String,
+    environment_production: String,
+    group: String,
+    group_placeholder: String,
     engine: String,
     host: String,
     port: String,
@@ -35,6 +43,14 @@ impl DbProfileEditorLabels {
             edit: tr("db.profile.edit", "Edit Database"),
             name: tr("db.profile.name", "Name"),
             name_placeholder: tr("db.profile.name.placeholder", "Production DB"),
+            environment: tr("db.profile.environment", "Environment"),
+            environment_unspecified: tr("db.profile.environment.unspecified", "Unspecified"),
+            environment_development: tr("db.profile.environment.development", "Development"),
+            environment_testing: tr("db.profile.environment.testing", "Testing"),
+            environment_staging: tr("db.profile.environment.staging", "Staging"),
+            environment_production: tr("db.profile.environment.production", "Production"),
+            group: tr("db.profile.group", "Group"),
+            group_placeholder: tr("db.profile.group.placeholder", "e.g. Order system"),
             engine: tr("db.profile.engine", "Engine"),
             host: tr("db.profile.host", "Host"),
             port: tr("db.profile.port", "Port"),
@@ -69,6 +85,16 @@ fn db_ssl_options(labels: &DbProfileEditorLabels) -> Vec<CoduxSelectOption> {
         CoduxSelectOption::new("disable", labels.ssl_disable.clone()),
         CoduxSelectOption::new("prefer", labels.ssl_prefer.clone()),
         CoduxSelectOption::new("require", labels.ssl_require.clone()),
+    ]
+}
+
+fn db_environment_options(labels: &DbProfileEditorLabels) -> Vec<CoduxSelectOption> {
+    vec![
+        CoduxSelectOption::new("unspecified", labels.environment_unspecified.clone()),
+        CoduxSelectOption::new("development", labels.environment_development.clone()),
+        CoduxSelectOption::new("testing", labels.environment_testing.clone()),
+        CoduxSelectOption::new("staging", labels.environment_staging.clone()),
+        CoduxSelectOption::new("production", labels.environment_production.clone()),
     ]
 }
 
@@ -163,6 +189,29 @@ pub(in crate::app) fn db_profile_editor_workspace(
                 window,
                 cx,
                 |app, value, window, cx| app.set_db_draft_field("name", value, window, cx),
+            ))
+            .child(db_dialog_select(
+                "environment",
+                labels.environment.clone(),
+                &app.db_draft_environment,
+                (db_environment_options(&labels), labels.select.clone()),
+                db_saving,
+                window,
+                cx,
+                |app, value, window, cx| app.set_db_draft_field("environment", value, window, cx),
+            ))
+            .child(db_dialog_input(
+                "group",
+                labels.group.clone(),
+                &app.db_draft_group,
+                DbDialogInputOptions {
+                    placeholder: labels.group_placeholder.clone(),
+                    masked: false,
+                    disabled: db_saving,
+                },
+                window,
+                cx,
+                |app, value, window, cx| app.set_db_draft_field("group", value, window, cx),
             ))
             .child(db_dialog_select(
                 "engine",

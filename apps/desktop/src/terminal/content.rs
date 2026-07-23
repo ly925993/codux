@@ -200,6 +200,11 @@ struct TerminalLink {
     range: Range<usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalPath {
+    path: String,
+}
+
 fn terminal_link_at_cell(
     content: &TerminalContent,
     point: TerminalCellPoint,
@@ -217,12 +222,35 @@ fn terminal_link_at_cell(
     if let Some((url, range)) = terminal_osc8_link_at(&row_cells, point.col) {
         return Some(TerminalLink { url, line, range });
     }
-    let row_text = terminal_row_text(&row_cells);
-    terminal_plain_url_at(&row_text, point.col).map(|(url, range)| TerminalLink {
-        url,
-        line,
-        range,
-    })
+    let logical_text = terminal_logical_text_at(content, line, point.col)?;
+    terminal_plain_url_at(&logical_text.text, logical_text.clicked_col).map(
+        |(url, logical_range)| TerminalLink {
+            url,
+            line,
+            range: logical_text.local_range(logical_range),
+        },
+    )
+}
+
+/// Resolves only POSIX absolute paths. Filesystem access is intentionally deferred until the
+/// menu action runs so a slow or disconnected volume cannot stall terminal pointer handling.
+fn terminal_path_at_cell(
+    content: &TerminalContent,
+    point: TerminalCellPoint,
+) -> Option<TerminalPath> {
+    let line = content.line_for_display_row(point.row);
+    let row_cells: Vec<&TerminalIndexedCell> = content
+        .cells
+        .iter()
+        .filter(|indexed| indexed.line() == line)
+        .collect();
+    if row_cells.is_empty() {
+        return None;
+    }
+
+    let logical_text = terminal_logical_text_at(content, line, point.col)?;
+    terminal_plain_path_at(&logical_text.text, logical_text.clicked_col)
+        .map(|(path, _)| TerminalPath { path })
 }
 
 /// OSC 8 hyperlink under the pointer; the range spans every cell on the row
@@ -275,6 +303,63 @@ fn terminal_row_text(row_cells: &[&TerminalIndexedCell]) -> Vec<(usize, char)> {
     text
 }
 
+struct TerminalLogicalText {
+    text: Vec<(usize, char)>,
+    clicked_col: usize,
+    current_row: Range<usize>,
+}
+
+impl TerminalLogicalText {
+    fn local_range(&self, logical_range: Range<usize>) -> Range<usize> {
+        logical_range.start.max(self.current_row.start) - self.current_row.start
+            ..logical_range.end.min(self.current_row.end) - self.current_row.start
+    }
+}
+
+/// Joins the visible rows connected by terminal soft-wrap markers. This is only called for
+/// modifier-assisted hover/click handling, so normal rendering never pays the reconstruction cost.
+fn terminal_logical_text_at(
+    content: &TerminalContent,
+    line: i32,
+    col: usize,
+) -> Option<TerminalLogicalText> {
+    if !content.line_in_snapshot(line) {
+        return None;
+    }
+    let first_snapshot_line = content.viewport_start_line;
+    let last_snapshot_line = content.last_snapshot_line()?;
+    let mut start_line = line;
+    while start_line > first_snapshot_line && content.is_wrapped_line(start_line - 1) {
+        start_line -= 1;
+    }
+    let mut end_line = line;
+    while end_line < last_snapshot_line && content.is_wrapped_line(end_line) {
+        end_line += 1;
+    }
+
+    let mut text = Vec::new();
+    for current_line in start_line..=end_line {
+        let row_cells: Vec<&TerminalIndexedCell> = content
+            .cells
+            .iter()
+            .filter(|indexed| indexed.line() == current_line)
+            .collect();
+        let logical_base = (current_line - start_line) as usize * content.columns;
+        text.extend(
+            terminal_row_text(&row_cells)
+                .into_iter()
+                .map(|(col, ch)| (logical_base + col, ch)),
+        );
+    }
+
+    let current_start = (line - start_line) as usize * content.columns;
+    Some(TerminalLogicalText {
+        text,
+        clicked_col: current_start + col,
+        current_row: current_start..current_start + content.columns,
+    })
+}
+
 fn terminal_plain_url_at(row_text: &[(usize, char)], col: usize) -> Option<(String, Range<usize>)> {
     static STRICT_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?i)(?:https?|file)://[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]"#)
@@ -302,6 +387,96 @@ fn terminal_plain_url_at(row_text: &[(usize, char)], col: usize) -> Option<(Stri
         }
     }
     None
+}
+
+/// Finds the absolute path that owns `col`, including shell-quoted paths and backslash-escaped
+/// spaces. Delimiters commonly emitted by logs are removed without scanning beyond this row.
+fn terminal_plain_path_at(row_text: &[(usize, char)], col: usize) -> Option<(String, Range<usize>)> {
+    let clicked_index = row_text.iter().position(|(cell_col, ch)| {
+        *cell_col <= col && col < cell_col.saturating_add(terminal_char_width(*ch))
+    })?;
+    let chars: Vec<char> = row_text.iter().map(|(_, ch)| *ch).collect();
+
+    for start in 0..chars.len() {
+        if chars[start] != '/' || !terminal_path_start_boundary(&chars, start) {
+            continue;
+        }
+
+        let quote = start
+            .checked_sub(1)
+            .and_then(|index| matches!(chars[index], '\'' | '"').then_some(chars[index]));
+        let mut end = start;
+        let mut escaped = false;
+        while end < chars.len() {
+            let ch = chars[end];
+            if escaped {
+                escaped = false;
+                end += 1;
+                continue;
+            }
+            if ch == '\\' && quote != Some('\'') {
+                escaped = true;
+                end += 1;
+                continue;
+            }
+            if quote.is_some_and(|quote| ch == quote) {
+                break;
+            }
+            if quote.is_none()
+                && (ch.is_whitespace() || matches!(ch, '\'' | '"' | '<' | '>' | '|' | '`'))
+            {
+                break;
+            }
+            end += 1;
+        }
+
+        end = trim_terminal_path_end(&chars, start, end);
+        if !(start <= clicked_index && clicked_index < end) {
+            continue;
+        }
+        let start_col = row_text[start].0;
+        let end_col = row_text[end - 1]
+            .0
+            .saturating_add(terminal_char_width(row_text[end - 1].1));
+        let raw: String = chars[start..end].iter().collect();
+        return Some((unescape_terminal_path(&raw), start_col..end_col));
+    }
+    None
+}
+
+fn terminal_path_start_boundary(chars: &[char], start: usize) -> bool {
+    // A scheme separator starts a URL, not a POSIX path.
+    if start > 0 && chars[start - 1] == ':' && chars.get(start + 1) == Some(&'/') {
+        return false;
+    }
+    start == 0
+        || chars[start - 1].is_whitespace()
+        || matches!(chars[start - 1], '\'' | '"' | '=' | '(' | '[' | '{' | ',' | ':')
+}
+
+fn trim_terminal_path_end(chars: &[char], start: usize, mut end: usize) -> usize {
+    while end > start + 1 && matches!(chars[end - 1], ',' | '.' | ';' | '!' | '?' | ')' | ']' | '}')
+    {
+        end -= 1;
+    }
+    end
+}
+
+fn unescape_terminal_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\'
+            && let Some(next) = chars.peek().copied()
+            && (next.is_whitespace() || matches!(next, '\\' | '\'' | '"' | '(' | ')' | '[' | ']'))
+        {
+            result.push(next);
+            chars.next();
+            continue;
+        }
+        result.push(ch);
+    }
+    result
 }
 
 fn is_openable_terminal_url(url: &str) -> bool {

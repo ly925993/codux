@@ -195,6 +195,33 @@ impl AgentTaskRelayBoard {
         true
     }
 
+    /// Rebind queued work to the current lease of the same terminal. Terminal
+    /// instances and Agent session IDs are intentionally short-lived, while the
+    /// board ID remains stable across relaunches and repeated relay rounds.
+    pub fn rebind_target(&mut self, target: AgentTaskRelayTarget) -> Result<bool, &'static str> {
+        if self.target.project_id != target.project_id
+            || self.target.worktree_id != target.worktree_id
+            || self.target.terminal_id != target.terminal_id
+        {
+            return Err("Task relay target does not belong to this board.");
+        }
+        if self.target == target {
+            return Ok(false);
+        }
+        // Never transfer ownership of an in-flight side effect. DeliveryUnknown
+        // is the sole exception: it is already paused and only an explicit user
+        // retry can turn it back into a sendable queued task.
+        if self
+            .active_task()
+            .is_some_and(|task| task.state != AgentTaskRelayTaskState::DeliveryUnknown)
+        {
+            return Err("Cannot change task relay target while a task is active.");
+        }
+        self.target = target;
+        self.bump_revision();
+        Ok(true)
+    }
+
     pub fn begin_dispatch(&mut self, now: f64, baseline: Option<f64>) -> Option<u64> {
         if self.state != AgentTaskRelayBoardState::Running
             || self
@@ -790,6 +817,55 @@ mod tests {
         assert_eq!(board.counts.running, 0);
         assert_eq!(board.counts.receipts, 1);
         assert_eq!(board.begin_dispatch(5.0, Some(4.0)), Some(second));
+    }
+
+    #[test]
+    fn queued_relay_rebinds_for_a_new_terminal_lease_and_agent_session() {
+        let mut board = AgentTaskRelayBoard::new("board-1", target());
+        board.add_task("next round".to_string(), 1.0).unwrap();
+        let mut next = target();
+        next.terminal_instance_id = Some("instance-2".to_string());
+        next.tool = "claude".to_string();
+        next.ai_session_id = Some("session-2".to_string());
+
+        assert!(board.rebind_target(next.clone()).unwrap());
+        assert_eq!(board.target, next);
+    }
+
+    #[test]
+    fn active_relay_cannot_transfer_to_another_terminal_lease() {
+        let mut board = AgentTaskRelayBoard::new("board-1", target());
+        let task_id = board.add_task("in flight".to_string(), 1.0).unwrap();
+        board.start().unwrap();
+        assert_eq!(board.begin_dispatch(2.0, None), Some(task_id));
+        let mut next = target();
+        next.terminal_instance_id = Some("instance-2".to_string());
+
+        assert_eq!(
+            board.rebind_target(next),
+            Err("Cannot change task relay target while a task is active.")
+        );
+        assert_eq!(
+            board.target.terminal_instance_id.as_deref(),
+            Some("instance-1")
+        );
+    }
+
+    #[test]
+    fn delivery_unknown_can_rebind_before_an_explicit_retry() {
+        let mut board = AgentTaskRelayBoard::new("board-1", target());
+        let task_id = board.add_task("retry me".to_string(), 1.0).unwrap();
+        board.start().unwrap();
+        assert_eq!(board.begin_dispatch(2.0, None), Some(task_id));
+        assert!(board.mark_write_succeeded(task_id, 2.1));
+        assert!(board.mark_delivery_unknown(task_id));
+        let mut next = target();
+        next.terminal_instance_id = Some("instance-2".to_string());
+
+        assert!(board.rebind_target(next.clone()).unwrap());
+        assert_eq!(board.target, next);
+        assert!(board.resolve_delivery_unknown(task_id, true, 3.0));
+        assert_eq!(board.tasks[0].state, AgentTaskRelayTaskState::Queued);
     }
 
     #[test]

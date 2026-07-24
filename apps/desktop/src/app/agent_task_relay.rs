@@ -177,8 +177,12 @@ impl CoduxApp {
         let board = self
             .agent_task_relay_boards
             .entry(board_id.clone())
-            .or_insert_with(|| AgentTaskRelayBoard::new(board_id, target));
-        match action(board) {
+            .or_insert_with(|| AgentTaskRelayBoard::new(board_id, target.clone()));
+        let result = board
+            .rebind_target(target)
+            .map_err(str::to_string)
+            .and_then(|rebound| action(board).map(|changed| changed || rebound));
+        match result {
             Ok(true) => {
                 let board = board.clone();
                 self.persist_agent_task_relay(board, cx);
@@ -284,23 +288,22 @@ impl CoduxApp {
         action: RelayTaskAction,
         cx: &mut Context<Self>,
     ) {
-        self.mutate_active_agent_task_relay(
-            |board| {
-                Ok(match action {
-                    RelayTaskAction::Promote => board.promote_task(task_id),
-                    RelayTaskAction::MoveUp => board.move_task(task_id, -1),
-                    RelayTaskAction::MoveDown => board.move_task(task_id, 1),
-                    RelayTaskAction::Delete => board.delete_task(task_id),
-                    RelayTaskAction::Resend => {
-                        board.resolve_delivery_unknown(task_id, true, app_now_seconds())
-                    }
-                    RelayTaskAction::MarkHandled => {
-                        board.resolve_delivery_unknown(task_id, false, app_now_seconds())
-                    }
-                })
+        let changed = self.mutate_active_agent_task_relay(
+            |board| match action {
+                RelayTaskAction::Promote => Ok(board.promote_task(task_id)),
+                RelayTaskAction::MoveUp => Ok(board.move_task(task_id, -1)),
+                RelayTaskAction::MoveDown => Ok(board.move_task(task_id, 1)),
+                RelayTaskAction::Delete => Ok(board.delete_task(task_id)),
+                RelayTaskAction::Resend => retry_agent_task_relay_task(board, task_id),
+                RelayTaskAction::MarkHandled => {
+                    Ok(board.resolve_delivery_unknown(task_id, false, app_now_seconds()))
+                }
             },
             cx,
         );
+        if changed && matches!(action, RelayTaskAction::Resend) {
+            self.pump_agent_task_relays(cx);
+        }
     }
 
     pub(in crate::app) fn agent_task_relay_owns_ack(
@@ -396,10 +399,7 @@ impl CoduxApp {
                 }
                 codux_runtime::ai_runtime::AIRuntimeSupervisorEvent::TerminalStatus { status } => {
                     for board in self.agent_task_relay_boards.values_mut() {
-                        if board.target.terminal_id != status.terminal_id
-                            || status.terminal_instance_id.is_some()
-                                && board.target.terminal_instance_id != status.terminal_instance_id
-                        {
+                        if !relay_target_matches_terminal_status(&board.target, status) {
                             continue;
                         }
                         let Some(task) = board.active_task().cloned() else {
@@ -411,24 +411,45 @@ impl CoduxApp {
                             continue;
                         }
                         use codux_runtime::ai_runtime::TerminalStatusState;
-                        let changed = match (status.state, task.state) {
-                            (TerminalStatusState::Waiting, AgentTaskRelayTaskState::Running) => {
-                                board.mark_needs_input(task.id)
+                        let changed = if relay_terminal_status_acknowledges_task(
+                            &board.target,
+                            &task,
+                            status,
+                        ) {
+                            // PTY activity is a portable acknowledgement when
+                            // Claude/Codex hook files are delayed or unavailable.
+                            board.mark_acknowledged(task.id, status.updated_at)
+                        } else {
+                            match (status.state, task.state) {
+                                (
+                                    TerminalStatusState::Completed,
+                                    AgentTaskRelayTaskState::Running,
+                                ) => board.mark_completed(
+                                    task.id,
+                                    relay_terminal_completion_id(status),
+                                    None,
+                                    status.updated_at,
+                                ),
+                                (
+                                    TerminalStatusState::Waiting,
+                                    AgentTaskRelayTaskState::Running,
+                                ) => board.mark_needs_input(task.id),
+                                (
+                                    TerminalStatusState::Working,
+                                    AgentTaskRelayTaskState::NeedsInput,
+                                ) => board.mark_input_resumed(task.id, Some(status.updated_at)),
+                                (
+                                    TerminalStatusState::Error,
+                                    AgentTaskRelayTaskState::Dispatching
+                                    | AgentTaskRelayTaskState::AwaitingAck,
+                                ) => board.mark_send_failed(task.id, status.updated_at),
+                                (
+                                    TerminalStatusState::Error,
+                                    AgentTaskRelayTaskState::Running
+                                    | AgentTaskRelayTaskState::NeedsInput,
+                                ) => board.mark_interrupted(task.id, status.updated_at),
+                                _ => false,
                             }
-                            (TerminalStatusState::Working, AgentTaskRelayTaskState::NeedsInput) => {
-                                board.mark_input_resumed(task.id, Some(status.updated_at))
-                            }
-                            (
-                                TerminalStatusState::Error,
-                                AgentTaskRelayTaskState::Dispatching
-                                | AgentTaskRelayTaskState::AwaitingAck,
-                            ) => board.mark_send_failed(task.id, status.updated_at),
-                            (
-                                TerminalStatusState::Error,
-                                AgentTaskRelayTaskState::Running
-                                | AgentTaskRelayTaskState::NeedsInput,
-                            ) => board.mark_interrupted(task.id, status.updated_at),
-                            _ => false,
                         };
                         if changed {
                             changed_ids.insert(board.id.clone());
@@ -453,11 +474,34 @@ impl CoduxApp {
     /// remains ahead of relay work and the durable dispatch intent is committed
     /// before the PTY side effect starts.
     pub(in crate::app) fn pump_agent_task_relays(&mut self, cx: &mut Context<Self>) {
+        if self.agent_task_relay_boards.is_empty() {
+            return;
+        }
         let board_ids = self
             .agent_task_relay_boards
             .keys()
             .cloned()
             .collect::<Vec<_>>();
+        // One lock/snapshot per pump keeps relay scheduling independent of the
+        // number of boards. Lookups below are allocation-free borrowed keys.
+        let terminal_statuses = self.runtime_service.ai_runtime_terminal_statuses();
+        let mut terminal_statuses_by_target = HashMap::new();
+        for status in &terminal_statuses {
+            let Some(instance_id) = status.terminal_instance_id.as_deref() else {
+                continue;
+            };
+            let key = (status.terminal_id.as_str(), instance_id);
+            terminal_statuses_by_target
+                .entry(key)
+                .and_modify(
+                    |current: &mut &codux_runtime::ai_runtime::TerminalStatusEvent| {
+                        if status.updated_at > current.updated_at {
+                            *current = status;
+                        }
+                    },
+                )
+                .or_insert(status);
+        }
         for board_id in board_ids {
             let expired_task_id = self
                 .agent_task_relay_boards
@@ -499,7 +543,20 @@ impl CoduxApp {
             else {
                 continue;
             };
-            if session.runtime_state != "idle" {
+            let terminal_status = target
+                .terminal_instance_id
+                .as_deref()
+                .and_then(|instance_id| {
+                    terminal_statuses_by_target
+                        .get(&(target.terminal_id.as_str(), instance_id))
+                        .copied()
+                });
+            if !relay_runtime_allows_dispatch(
+                &session.tool,
+                &session.runtime_state,
+                session.last_user_input_at,
+                terminal_status,
+            ) {
                 continue;
             }
             let key = super::agent_prompt_queue::AgentPromptQueueKey {
@@ -603,6 +660,18 @@ enum RelayDispatchResult {
     Sent,
     BarrierFailed(String),
     DeliveryUnknown(String),
+}
+
+fn retry_agent_task_relay_task(
+    board: &mut AgentTaskRelayBoard,
+    task_id: u64,
+) -> Result<bool, String> {
+    if !board.resolve_delivery_unknown(task_id, true, app_now_seconds()) {
+        return Ok(false);
+    }
+    // "Resend" is a command, not a queue-edit action. Resume the paused board
+    // in the same transaction so the caller can immediately pump the retry.
+    board.start().map(|_| true).map_err(str::to_string)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -714,6 +783,67 @@ fn relay_target_matches_completion(
             .ai_session_id
             .as_ref()
             .is_none_or(|session_id| completion.ai_session_id.as_ref() == Some(session_id))
+}
+
+fn relay_target_matches_terminal_status(
+    target: &AgentTaskRelayTarget,
+    status: &codux_runtime::ai_runtime::TerminalStatusEvent,
+) -> bool {
+    target.terminal_id == status.terminal_id
+        && target.terminal_instance_id == status.terminal_instance_id
+}
+
+fn relay_terminal_status_acknowledges_task(
+    target: &AgentTaskRelayTarget,
+    task: &codux_runtime::agent_task_relay::AgentTaskRelayTask,
+    status: &codux_runtime::ai_runtime::TerminalStatusEvent,
+) -> bool {
+    relay_target_matches_terminal_status(target, status)
+        && status.state == codux_runtime::ai_runtime::TerminalStatusState::Working
+        && task.state == AgentTaskRelayTaskState::AwaitingAck
+        && task
+            .dispatch_started_at
+            .is_some_and(|started| status.updated_at + 0.001 >= started)
+}
+
+fn relay_terminal_completion_id(status: &codux_runtime::ai_runtime::TerminalStatusEvent) -> String {
+    // The source and microsecond timestamp keep independent OSC completion
+    // signals unique while repeated delivery of the same event stays idempotent.
+    format!(
+        "terminal-status:{}:{}:{}:{:.6}",
+        status.terminal_id,
+        status.terminal_instance_id.as_deref().unwrap_or("none"),
+        status.source,
+        status.updated_at
+    )
+}
+
+/// Agent session files can remain in `responding` briefly after a turn ends.
+/// Completed is an explicit full-turn boundary for every supported Agent;
+/// Claude also needs Idle as a bounded fallback because its terminal bridge may
+/// omit Completed. The caller already enforces exact terminal-instance identity.
+fn relay_runtime_allows_dispatch(
+    tool: &str,
+    runtime_state: &str,
+    last_user_input_at: Option<f64>,
+    terminal_status: Option<&codux_runtime::ai_runtime::TerminalStatusEvent>,
+) -> bool {
+    if runtime_state == "idle" {
+        return true;
+    }
+    if runtime_state != "responding" {
+        return false;
+    }
+    let Some(last_user_input_at) = last_user_input_at else {
+        return false;
+    };
+    terminal_status.is_some_and(|status| {
+        let is_completed =
+            status.state == codux_runtime::ai_runtime::TerminalStatusState::Completed;
+        let is_claude_idle = tool.eq_ignore_ascii_case("claude")
+            && status.state == codux_runtime::ai_runtime::TerminalStatusState::Idle;
+        (is_completed || is_claude_idle) && status.updated_at + 0.001 >= last_user_input_at
+    })
 }
 
 impl Render for AgentTaskRelayView {
@@ -1421,6 +1551,10 @@ fn relay_error_label(error: &str) -> &str {
         }
         "Resolve the blocked task before starting relay." => "请先处理当前阻塞任务，再开始接力。",
         "Add a task before starting relay." => "请先添加任务，再开始接力。",
+        "Cannot change task relay target while a task is active." => {
+            "当前任务仍在执行，暂时不能切换接力终端。"
+        }
+        "Task relay target does not belong to this board." => "接力任务与当前终端不匹配。",
         _ => error,
     }
 }
@@ -1505,6 +1639,22 @@ mod tests {
         }
     }
 
+    fn terminal_status(
+        instance: &str,
+        state: codux_runtime::ai_runtime::TerminalStatusState,
+        updated_at: f64,
+    ) -> codux_runtime::ai_runtime::TerminalStatusEvent {
+        codux_runtime::ai_runtime::TerminalStatusEvent {
+            terminal_id: "terminal-1".to_string(),
+            terminal_instance_id: Some(instance.to_string()),
+            project_id: Some("project-1".to_string()),
+            worktree_id: Some("worktree-1".to_string()),
+            state,
+            updated_at,
+            source: "test".to_string(),
+        }
+    }
+
     #[test]
     fn relay_completion_requires_matching_flags_and_time_fences() {
         let task = running_task();
@@ -1565,5 +1715,144 @@ mod tests {
         assert_eq!(first, new_instance);
         assert_eq!(first, new_session);
         assert_ne!(first, other_board);
+    }
+
+    #[test]
+    fn relay_working_status_acknowledges_only_the_current_dispatch_instance() {
+        let mut task = running_task();
+        task.state = AgentTaskRelayTaskState::AwaitingAck;
+        task.acknowledged_at = None;
+        let current = target("instance-1", "session-1");
+
+        assert!(relay_terminal_status_acknowledges_task(
+            &current,
+            &task,
+            &terminal_status(
+                "instance-1",
+                codux_runtime::ai_runtime::TerminalStatusState::Working,
+                10.0
+            )
+        ));
+        assert!(!relay_terminal_status_acknowledges_task(
+            &current,
+            &task,
+            &terminal_status(
+                "instance-1",
+                codux_runtime::ai_runtime::TerminalStatusState::Working,
+                9.0
+            )
+        ));
+        assert!(!relay_terminal_status_acknowledges_task(
+            &current,
+            &task,
+            &terminal_status(
+                "instance-2",
+                codux_runtime::ai_runtime::TerminalStatusState::Working,
+                11.0
+            )
+        ));
+    }
+
+    #[test]
+    fn stale_responding_state_uses_a_fresh_completed_terminal_signal() {
+        let completed = terminal_status(
+            "instance-1",
+            codux_runtime::ai_runtime::TerminalStatusState::Completed,
+            20.0,
+        );
+        assert!(relay_runtime_allows_dispatch(
+            "claude",
+            "responding",
+            Some(19.0),
+            Some(&completed)
+        ));
+
+        let stale = terminal_status(
+            "instance-1",
+            codux_runtime::ai_runtime::TerminalStatusState::Completed,
+            18.0,
+        );
+        assert!(!relay_runtime_allows_dispatch(
+            "claude",
+            "responding",
+            Some(19.0),
+            Some(&stale)
+        ));
+        assert!(!relay_runtime_allows_dispatch(
+            "claude",
+            "needsInput",
+            Some(19.0),
+            Some(&completed)
+        ));
+        assert!(relay_runtime_allows_dispatch(
+            "codex",
+            "responding",
+            Some(19.0),
+            Some(&completed)
+        ));
+        let idle = terminal_status(
+            "instance-1",
+            codux_runtime::ai_runtime::TerminalStatusState::Idle,
+            20.0,
+        );
+        assert!(relay_runtime_allows_dispatch(
+            "claude",
+            "responding",
+            Some(19.0),
+            Some(&idle)
+        ));
+        assert!(!relay_runtime_allows_dispatch(
+            "codex",
+            "responding",
+            Some(19.0),
+            Some(&idle)
+        ));
+        assert!(relay_runtime_allows_dispatch(
+            "codex",
+            "idle",
+            Some(19.0),
+            None
+        ));
+    }
+
+    #[test]
+    fn terminal_completion_signal_finishes_a_running_task_without_session_event() {
+        let mut board = AgentTaskRelayBoard::new("board-1", target("instance-1", "session-1"));
+        let task_id = board.add_task("first".to_string(), 1.0).unwrap();
+        board.add_task("second".to_string(), 2.0).unwrap();
+        board.start().unwrap();
+        assert_eq!(board.begin_dispatch(10.0, Some(9.0)), Some(task_id));
+        assert!(board.mark_write_succeeded(task_id, 10.1));
+        assert!(board.mark_acknowledged(task_id, 10.2));
+        let status = terminal_status(
+            "instance-1",
+            codux_runtime::ai_runtime::TerminalStatusState::Completed,
+            11.0,
+        );
+
+        assert!(board.mark_completed(
+            task_id,
+            relay_terminal_completion_id(&status),
+            None,
+            status.updated_at
+        ));
+        assert_eq!(board.counts.queued, 1);
+        assert_eq!(board.counts.running, 0);
+        assert_eq!(board.counts.receipts, 1);
+    }
+
+    #[test]
+    fn resend_command_requeues_and_immediately_resumes_the_board() {
+        let mut board = AgentTaskRelayBoard::new("board-1", target("instance-1", "session-1"));
+        let task_id = board.add_task("retry".to_string(), 1.0).unwrap();
+        board.start().unwrap();
+        assert_eq!(board.begin_dispatch(2.0, None), Some(task_id));
+        assert!(board.mark_write_succeeded(task_id, 2.1));
+        assert!(board.mark_delivery_unknown(task_id));
+
+        assert!(retry_agent_task_relay_task(&mut board, task_id).unwrap());
+        assert_eq!(board.state, AgentTaskRelayBoardState::Running);
+        assert!(!board.paused_by_user);
+        assert_eq!(board.tasks[0].state, AgentTaskRelayTaskState::Queued);
     }
 }

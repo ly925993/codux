@@ -12,6 +12,7 @@ pub(super) const MAX_AGENT_PROMPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_AGENT_QUEUE_SESSIONS: usize = 32;
 const NATIVE_SUBMISSION_GUARD: Duration = Duration::from_secs(5);
 const AGENT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+const AGENT_COMPOSER_SETTLE_WINDOW: Duration = Duration::from_millis(150);
 const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 200.0;
 const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 720.0;
 
@@ -66,6 +67,10 @@ pub(super) struct AgentPromptDispatch {
     pub(super) key: AgentPromptQueueKey,
     pub(super) item_id: u64,
     pub(super) text: Arc<str>,
+    /// The terminal can publish Completed before a Windows ConPTY-backed TUI
+    /// has restored its composer. The background writer uses this timestamp to
+    /// wait only for the unelapsed part of the short readiness window.
+    pub(super) terminal_ready_at: Option<f64>,
 }
 
 #[derive(Default)]
@@ -337,6 +342,16 @@ impl AgentPromptQueueStore {
         if !idle_after_barrier && !(runtime_state == "responding" && completed_after_barrier) {
             return None;
         }
+        // Preserve the event that made this dispatch eligible. A recent idle
+        // or completion transition needs a brief ConPTY settle window, while
+        // an Agent that has already been idle incurs no additional delay.
+        let terminal_ready_at = if completed_after_barrier {
+            terminal_completed_at
+        } else if runtime_state == "idle" {
+            runtime_activity_at
+        } else {
+            None
+        };
         item.status = AgentPromptStatus::Dispatching;
         item.dispatch_started_at = Some(Instant::now());
         item.dispatch_started_wall_at = Some(app_now_seconds().to_bits());
@@ -345,6 +360,7 @@ impl AgentPromptQueueStore {
             key: key.clone(),
             item_id: item.id,
             text: item.text.clone(),
+            terminal_ready_at,
         })
     }
 
@@ -590,6 +606,29 @@ fn prompt_preview(text: &str) -> Arc<str> {
         preview.push_str("...");
     }
     Arc::from(preview)
+}
+
+/// Wait off the GPUI thread until a just-completed Agent TUI has had one short
+/// platform-independent window to restore its input composer. The delay is
+/// capped so clock skew cannot stall queue delivery.
+pub(super) fn wait_for_agent_composer_settle(terminal_ready_at: Option<f64>) {
+    let delay = agent_composer_settle_delay(terminal_ready_at, app_now_seconds());
+    if !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
+}
+
+fn agent_composer_settle_delay(terminal_ready_at: Option<f64>, now: f64) -> Duration {
+    let Some(terminal_ready_at) = terminal_ready_at.filter(|value| value.is_finite()) else {
+        return Duration::ZERO;
+    };
+    if !now.is_finite() {
+        return AGENT_COMPOSER_SETTLE_WINDOW;
+    }
+    let elapsed = (now - terminal_ready_at).max(0.0);
+    let remaining = (AGENT_COMPOSER_SETTLE_WINDOW.as_secs_f64() - elapsed)
+        .clamp(0.0, AGENT_COMPOSER_SETTLE_WINDOW.as_secs_f64());
+    Duration::from_secs_f64(remaining)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1058,7 +1097,9 @@ impl CoduxApp {
                 let item_id = dispatch.item_id;
                 let key = dispatch.key;
                 let text = dispatch.text;
+                let terminal_ready_at = dispatch.terminal_ready_at;
                 let result = codux_runtime::async_runtime::spawn_blocking(move || {
+                    wait_for_agent_composer_settle(terminal_ready_at);
                     pane.send_agent_prompt(text.as_ref())
                 })
                 .await;
@@ -1737,6 +1778,7 @@ mod tests {
             .begin_dispatch_for_runtime(&key(), "responding", None, latest_completion_at)
             .unwrap();
         assert!(store.finish_write(&key(), dispatch.item_id, None));
+        assert_eq!(dispatch.terminal_ready_at, Some(completed_at));
         let working_at = completed_at + 1.0;
         assert!(store.acknowledge_agent_started_from_terminal_status(&key(), working_at));
 
@@ -1745,6 +1787,23 @@ mod tests {
             store
                 .begin_dispatch_for_runtime(&key(), "responding", None, stale_completion_at,)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn recent_terminal_completion_waits_only_for_remaining_settle_window() {
+        assert_eq!(
+            agent_composer_settle_delay(Some(100.0), 100.05),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            agent_composer_settle_delay(Some(100.0), 100.2),
+            Duration::ZERO
+        );
+        assert_eq!(agent_composer_settle_delay(None, 100.0), Duration::ZERO);
+        assert_eq!(
+            agent_composer_settle_delay(Some(101.0), 100.0),
+            AGENT_COMPOSER_SETTLE_WINDOW
         );
     }
 

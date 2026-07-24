@@ -595,6 +595,19 @@ impl CoduxApp {
                 pane.cancel_agent_prompt_dispatch();
                 continue;
             };
+            // Completed/Idle may lead the Windows ConPTY composer by a few
+            // frames. Carry the exact readiness event into the background
+            // writer so persistence time counts toward the settle window.
+            let terminal_ready_at = terminal_status
+                .filter(|status| {
+                    matches!(
+                        status.state,
+                        codux_runtime::ai_runtime::TerminalStatusState::Completed
+                            | codux_runtime::ai_runtime::TerminalStatusState::Idle
+                    )
+                })
+                .map(|status| status.updated_at)
+                .or_else(|| (session.runtime_state == "idle").then_some(session.updated_at));
             let text = board
                 .task(task_id)
                 .map(|task| task.text.clone())
@@ -608,6 +621,7 @@ impl CoduxApp {
                         pane.cancel_agent_prompt_dispatch();
                         return RelayDispatchResult::BarrierFailed(error);
                     }
+                    super::agent_prompt_queue::wait_for_agent_composer_settle(terminal_ready_at);
                     match pane.send_agent_prompt(text.as_ref()) {
                         Ok(()) => RelayDispatchResult::Sent,
                         Err(error) => RelayDispatchResult::DeliveryUnknown(error.to_string()),

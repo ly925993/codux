@@ -83,6 +83,10 @@ pub struct AIRuntimeSessionSummary {
     #[serde(default)]
     pub started_at: Option<f64>,
     pub updated_at: f64,
+    #[serde(default)]
+    pub runtime_activity_at: Option<f64>,
+    #[serde(default)]
+    pub last_user_input_at: Option<f64>,
     pub event_count: usize,
     #[serde(default)]
     pub has_completed_turn: bool,
@@ -469,6 +473,8 @@ fn session_from_runtime_snapshot(session: &AISessionSnapshot) -> AIRuntimeSessio
         session_title: session.session_title.clone(),
         started_at: session.started_at,
         updated_at: session.updated_at,
+        runtime_activity_at: session.runtime_activity_at,
+        last_user_input_at: session.last_user_input_at,
         event_count: usize::from(session.started_at.is_some())
             + usize::from(session.has_completed_turn)
             + usize::from(session.notification_type.is_some()),
@@ -609,6 +615,8 @@ mod tests {
                     baseline_resolved: false,
                     started_at: Some(10.0),
                     updated_at: 20.0,
+                    runtime_activity_at: None,
+                    last_user_input_at: None,
                     active_turn_started_at: None,
                     runtime_turn_started_at: None,
                     completed_turn_started_at: None,
@@ -655,6 +663,8 @@ mod tests {
                     baseline_resolved: false,
                     started_at: Some(11.0),
                     updated_at: 30.0,
+                    runtime_activity_at: None,
+                    last_user_input_at: None,
                     active_turn_started_at: None,
                     runtime_turn_started_at: None,
                     completed_turn_started_at: None,

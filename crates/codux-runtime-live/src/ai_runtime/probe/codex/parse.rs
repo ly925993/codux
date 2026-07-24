@@ -44,7 +44,7 @@ pub(super) struct CodexParsedState {
     /// signature behind `needsInput` detection.
     pub(super) last_function_call_at: Option<f64>,
     pub(super) last_function_output_at: Option<f64>,
-    last_user_message_at: Option<f64>,
+    pub(super) last_user_message_at: Option<f64>,
 }
 
 impl CodexParsedState {
@@ -544,6 +544,28 @@ mod tests {
         assert_eq!(plan.items[0].status, "completed");
         assert_eq!(plan.items[1].status, "in_progress");
         assert_eq!(plan.items[2].status, "pending");
+    }
+
+    #[test]
+    fn tracks_real_activity_and_native_user_input_separately() {
+        let user_at = parse_iso8601_seconds("2026-06-09T10:00:00Z").unwrap();
+        let output_at = parse_iso8601_seconds("2026-06-09T10:00:05Z").unwrap();
+        let lines = vec![
+            line(serde_json::json!({
+                "timestamp": "2026-06-09T10:00:00Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "continue"}
+            })),
+            line(serde_json::json!({
+                "timestamp": "2026-06-09T10:00:05Z",
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "call-1"}
+            })),
+        ];
+
+        let state = parse_codex_runtime_lines(lines.into_iter(), None, None, None).unwrap();
+        assert_eq!(state.last_user_message_at, Some(user_at));
+        assert_eq!(state.last_event_at, Some(output_at));
     }
 
     fn line(value: serde_json::Value) -> String {

@@ -2,7 +2,8 @@ use super::{AIRuntimeStateCore, helpers::now_seconds};
 use crate::ai_runtime::log::runtime_log_line;
 use crate::ai_runtime::snapshot::{
     AILatestCompletion, AIProjectPhase, AIProjectStateSnapshot, AIProjectTotals,
-    AIRuntimeCompletionEvent, AIRuntimeStateSnapshot, AISessionSnapshot,
+    AIRuntimeCompletionEvent, AIRuntimeSessionCompletionEvent, AIRuntimeStateSnapshot,
+    AISessionSnapshot,
 };
 const NEEDS_INPUT_VISIBLE_SECONDS: f64 = 30.0;
 
@@ -268,6 +269,64 @@ pub(super) fn drain_completion_events_unlocked(
             tool,
             was_interrupted,
             session: Some(session),
+        });
+    }
+    events
+}
+
+pub(super) fn drain_session_completion_events_unlocked(
+    core: &mut AIRuntimeStateCore,
+) -> Vec<AIRuntimeSessionCompletionEvent> {
+    const MAX_NOTIFIED_SESSION_COMPLETION_KEYS: usize = 4096;
+
+    // Sort before emitting so a mutation that discovers several completions
+    // has a stable chronological order regardless of HashMap iteration order.
+    let mut completed_sessions = core
+        .sessions
+        .values()
+        .filter(|session| session.state == "idle")
+        .filter(|session| session.has_completed_turn || session.was_interrupted)
+        .cloned()
+        .collect::<Vec<_>>();
+    completed_sessions.sort_by(|left, right| left.updated_at.total_cmp(&right.updated_at));
+
+    let mut events = Vec::new();
+    for session in completed_sessions {
+        let completion_key = completion_event_key(&session);
+        if !core
+            .notified_session_completion_keys
+            .insert(completion_key.clone())
+        {
+            continue;
+        }
+        core.notified_session_completion_order
+            .push_back(completion_key.clone());
+        while core.notified_session_completion_order.len() > MAX_NOTIFIED_SESSION_COMPLETION_KEYS {
+            if let Some(expired_key) = core.notified_session_completion_order.pop_front() {
+                core.notified_session_completion_keys.remove(&expired_key);
+            }
+        }
+
+        let turn_started_at = session
+            .completed_turn_started_at
+            .or(session.active_turn_started_at)
+            .or(session.runtime_turn_started_at)
+            .or(session.started_at);
+        events.push(AIRuntimeSessionCompletionEvent {
+            id: completion_key,
+            project_id: session.project_id.clone(),
+            project_name: session.project_name.clone(),
+            terminal_id: session.terminal_id.clone(),
+            terminal_instance_id: session.terminal_instance_id.clone(),
+            tool: session.tool.clone(),
+            ai_session_id: session.ai_session_id.clone(),
+            turn_started_at,
+            completed_at: session.updated_at,
+            has_completed_turn: session.has_completed_turn,
+            was_interrupted: session.was_interrupted,
+            latest_assistant_preview: session.latest_assistant_preview.clone(),
+            total_tokens: session.total_tokens,
+            cached_input_tokens: session.cached_input_tokens,
         });
     }
     events

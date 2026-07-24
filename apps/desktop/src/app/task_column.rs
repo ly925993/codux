@@ -26,7 +26,6 @@ pub(in crate::app) struct TaskColumnView {
     worktree_list_view: gpui::Entity<TaskWorktreeListView>,
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
-    agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
     worktree_count: usize,
     sessions_collapsed: bool,
 }
@@ -85,7 +84,6 @@ impl Render for TaskColumnView {
             self.worktree_list_view.clone(),
             self.terminal_list_view.clone(),
             self.session_list_view.clone(),
-            self.agent_prompt_queue_view.clone(),
             self.worktree_count,
             self.sessions_collapsed,
         )
@@ -96,14 +94,13 @@ impl Render for TaskColumnView {
 impl CoduxApp {
     pub(in crate::app) fn task_column_view(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Entity<TaskColumnView> {
         let sessions_collapsed = self.task_section_sessions_collapsed;
         let worktree_count = self.state.worktrees.worktrees.len();
         if let Some(view) = self.task_column_view.clone() {
             self.update_task_column_child_views(cx);
-            let _ = self.agent_prompt_queue_view(window, cx);
             view.update(cx, |view, cx| {
                 if view.sessions_collapsed != sessions_collapsed
                     || view.worktree_count != worktree_count
@@ -119,13 +116,11 @@ impl CoduxApp {
         let worktree_list_view = self.task_worktree_list_view(cx);
         let terminal_list_view = self.task_terminal_list_view(cx);
         let session_list_view = self.task_session_list_view(cx);
-        let agent_prompt_queue_view = self.agent_prompt_queue_view(window, cx);
         let view = cx.new(|_| TaskColumnView {
             header_view,
             worktree_list_view,
             terminal_list_view,
             session_list_view,
-            agent_prompt_queue_view,
             worktree_count,
             sessions_collapsed,
         });
@@ -138,7 +133,6 @@ impl CoduxApp {
         let _ = self.task_worktree_list_view(cx);
         let _ = self.task_terminal_list_view(cx);
         let _ = self.task_session_list_view(cx);
-        self.refresh_agent_prompt_queue_view(cx);
     }
 }
 
@@ -581,7 +575,6 @@ fn task_column_content(
     worktree_list_view: gpui::Entity<TaskWorktreeListView>,
     terminal_list_view: gpui::Entity<TaskTerminalListView>,
     session_list_view: gpui::Entity<TaskSessionListView>,
-    agent_prompt_queue_view: gpui::Entity<AgentPromptQueueView>,
     worktree_count: usize,
     sessions_collapsed: bool,
 ) -> impl IntoElement {
@@ -606,7 +599,7 @@ fn task_column_content(
                     div()
                         // Worktrees are a compact navigation list. Giving it a
                         // row-bounded height keeps terminals, sessions, and the
-                        // send queue visible even when only one branch exists.
+                        // session history visible even when only one branch exists.
                         .flex_none()
                         .h(px(worktree_height))
                         .min_h_0()
@@ -627,8 +620,7 @@ fn task_column_content(
                         .when(sessions_collapsed, |this| this.flex_none())
                         .when(!sessions_collapsed, |this| this.flex_1())
                         .child(gpui::AnyView::from(session_list_view)),
-                )
-                .child(gpui::AnyView::from(agent_prompt_queue_view)),
+                ),
         )
 }
 

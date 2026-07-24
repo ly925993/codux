@@ -167,6 +167,8 @@ fn runtime_session(terminal_id: &str) -> AIRuntimeSessionSummary {
         session_title: "Session".to_string(),
         started_at: None,
         updated_at: 2_000.0,
+        runtime_activity_at: None,
+        last_user_input_at: None,
         event_count: 1,
         has_completed_turn: false,
         was_interrupted: false,

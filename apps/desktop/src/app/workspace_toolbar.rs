@@ -47,6 +47,18 @@ impl CoduxApp {
             });
         let show_server_info_button = has_project_context
             && (remote_project_device_id.is_none() || connected_remote_project_device_id.is_some());
+        let send_queue_count = self.active_agent_prompt_queue_count();
+        let (relay_queue_count, _, relay_blocked) = self.active_agent_task_relay_counts();
+        let send_queue_label = workspace_i18n(
+            &self.state.settings.language,
+            "ai.queue.title",
+            "Send Queue",
+        );
+        let relay_label = if self.state.settings.language.starts_with("zh") {
+            "任务接力".to_string()
+        } else {
+            "Task Relay".to_string()
+        };
         let pet_button = if self.state.settings.pet_enabled {
             if has_project_context {
                 workspace_pet_button(
@@ -129,16 +141,39 @@ impl CoduxApp {
                                     AssistantPanel::ServerInfo,
                                     self.assistant_panel,
                                     true,
+                                    0,
+                                    false,
                                     cx,
                                 ),
                             )
                         })
                         .child(workspace_toolbar_separator(cx))
                         .child(workspace_assistant_button(
+                            send_queue_label,
+                            AssistantPanel::SendQueue,
+                            self.assistant_panel,
+                            has_project_context,
+                            send_queue_count,
+                            false,
+                            cx,
+                        ))
+                        .child(workspace_assistant_button(
+                            relay_label,
+                            AssistantPanel::TaskRelay,
+                            self.assistant_panel,
+                            has_project_context,
+                            relay_queue_count,
+                            relay_blocked,
+                            cx,
+                        ))
+                        .child(workspace_toolbar_separator(cx))
+                        .child(workspace_assistant_button(
                             "AI",
                             AssistantPanel::AIStats,
                             self.assistant_panel,
                             has_project_context,
+                            0,
+                            false,
                             cx,
                         ))
                         .child(workspace_assistant_button(
@@ -146,6 +181,8 @@ impl CoduxApp {
                             AssistantPanel::Ssh,
                             self.assistant_panel,
                             has_project_context,
+                            0,
+                            false,
                             cx,
                         ))
                         .child(workspace_assistant_button(
@@ -153,6 +190,8 @@ impl CoduxApp {
                             AssistantPanel::DB,
                             self.assistant_panel,
                             has_project_context,
+                            0,
+                            false,
                             cx,
                         ))
                         .child(workspace_assistant_button(
@@ -160,6 +199,8 @@ impl CoduxApp {
                             AssistantPanel::FileManager,
                             self.assistant_panel,
                             has_project_context,
+                            0,
+                            false,
                             cx,
                         ))
                         .child(workspace_assistant_button(
@@ -167,6 +208,8 @@ impl CoduxApp {
                             AssistantPanel::Git,
                             self.assistant_panel,
                             has_project_context,
+                            0,
+                            false,
                             cx,
                         ))
                         .when(!cfg!(target_os = "macos"), |this| {
@@ -370,16 +413,21 @@ fn workspace_window_control_button(
 }
 
 fn workspace_assistant_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     panel: AssistantPanel,
     active_panel: Option<AssistantPanel>,
     enabled: bool,
+    count: usize,
+    blocked: bool,
     cx: &mut Context<CoduxApp>,
 ) -> impl IntoElement {
+    let label = label.into();
     let active = enabled && active_panel == Some(panel);
 
     let button = workspace_header_button(
         match panel {
+            AssistantPanel::SendQueue => "workspace-assistant-send-queue",
+            AssistantPanel::TaskRelay => "workspace-assistant-task-relay",
             AssistantPanel::AIStats => "workspace-assistant-ai",
             AssistantPanel::ServerInfo => "workspace-assistant-server",
             AssistantPanel::Ssh => "workspace-assistant-ssh",
@@ -388,7 +436,16 @@ fn workspace_assistant_button(
             AssistantPanel::Git => "workspace-assistant-git",
         },
         cx,
-    );
+    )
+    // Queue badges use a fixed footprint so counts and blocker state never
+    // shift the neighboring title-bar controls.
+    .w(px(
+        if matches!(panel, AssistantPanel::SendQueue | AssistantPanel::TaskRelay) {
+            50.0
+        } else {
+            38.0
+        },
+    ));
     let button = if active {
         button
             .ghost()
@@ -409,12 +466,15 @@ fn workspace_assistant_button(
         .child(
             div()
                 .h(px(20.0))
-                .w(px(20.0))
+                .min_w(px(20.0))
                 .flex()
                 .items_center()
                 .justify_center()
+                .gap_1()
                 .child(
                     Icon::new(match panel {
+                        AssistantPanel::SendQueue => HeroIconName::ChatBubbleLeftRight,
+                        AssistantPanel::TaskRelay => HeroIconName::QueueList,
                         AssistantPanel::AIStats => HeroIconName::CpuChip,
                         AssistantPanel::ServerInfo => HeroIconName::ServerStack,
                         AssistantPanel::Ssh => HeroIconName::CommandLine,
@@ -428,12 +488,40 @@ fn workspace_assistant_button(
                     } else {
                         cx.theme().secondary_foreground
                     }),
-                ),
+                )
+                .when(count > 0, |this| {
+                    this.child(
+                        div()
+                            .text_size(rems(0.625))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if blocked {
+                                color(theme::RED)
+                            } else {
+                                cx.theme().secondary_foreground
+                            })
+                            .child(if count > 99 {
+                                "99+".to_string()
+                            } else {
+                                count.to_string()
+                            }),
+                    )
+                })
+                .when(blocked, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(color(theme::RED))
+                            .child("!"),
+                    )
+                }),
         );
 
     with_codux_tooltip(
         cx.entity(),
         match panel {
+            AssistantPanel::SendQueue => "workspace-assistant-send-queue-tooltip",
+            AssistantPanel::TaskRelay => "workspace-assistant-task-relay-tooltip",
             AssistantPanel::AIStats => "workspace-assistant-ai-tooltip",
             AssistantPanel::ServerInfo => "workspace-assistant-server-tooltip",
             AssistantPanel::Ssh => "workspace-assistant-ssh-tooltip",

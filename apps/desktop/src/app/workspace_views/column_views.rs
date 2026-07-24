@@ -208,7 +208,7 @@ impl WorkspaceAssistantView {
 }
 
 impl Render for WorkspaceAssistantView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
         let app_entity = self.app_entity.clone();
         div().when_some(snapshot.panel, |this, panel| {
@@ -225,6 +225,56 @@ impl Render for WorkspaceAssistantView {
                     .border_l_1()
                     .border_color(cx.theme().sidebar_border)
                     .child(match panel {
+                        AssistantPanel::SendQueue => self.app_entity.update(cx, |app, cx| {
+                            let count = app.active_agent_prompt_queue_count();
+                            let title = app.text("ai.queue.title", "Send Queue");
+                            let empty = if app.state.settings.language.starts_with("zh") {
+                                "暂无待发送消息".to_string()
+                            } else {
+                                "No queued messages".to_string()
+                            };
+                            let queue = app.agent_prompt_queue_view(window, cx);
+                            div()
+                                .flex()
+                                .flex_col()
+                                .size_full()
+                                .min_h_0()
+                                .child(
+                                    div()
+                                        .h(px(44.0))
+                                        .flex_none()
+                                        .px_3()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            Icon::new(HeroIconName::ChatBubbleLeftRight).size_4(),
+                                        )
+                                        .child(title)
+                                        .child(Tag::secondary().child(count.to_string())),
+                                )
+                                .when(count == 0, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(empty),
+                                    )
+                                })
+                                .when(count > 0, |this| this.child(gpui::AnyView::from(queue)))
+                                .into_any_element()
+                        }),
+                        AssistantPanel::TaskRelay => self.app_entity.update(cx, |app, cx| {
+                            gpui::AnyView::from(app.agent_task_relay_view(window, cx))
+                                .into_any_element()
+                        }),
                         AssistantPanel::AIStats => self.app_entity.update(cx, |app, cx| {
                             gpui::AnyView::from(app.ai_stats_sidebar_view(cx)).into_any_element()
                         }),
@@ -263,6 +313,7 @@ pub(super) fn assistant_panel_available(
     snapshot: &WorkspaceAssistantSnapshot,
 ) -> bool {
     match panel {
+        AssistantPanel::SendQueue | AssistantPanel::TaskRelay => snapshot.has_project,
         AssistantPanel::Ssh => true,
         AssistantPanel::ServerInfo => snapshot.has_project,
         _ => snapshot.has_project,
@@ -270,6 +321,7 @@ pub(super) fn assistant_panel_available(
 }
 
 pub(super) fn workspace_toolbar_fingerprint(app: &CoduxApp) -> u64 {
+    let relay_counts = app.active_agent_task_relay_counts();
     workspace_view_hash(&(
         workspace_view_key(app.workspace_view),
         assistant_panel_key(app.assistant_panel),
@@ -283,6 +335,8 @@ pub(super) fn workspace_toolbar_fingerprint(app: &CoduxApp) -> u64 {
         }),
         app.state.settings.language.clone(),
         app.state.settings.pet_enabled,
+        app.active_agent_prompt_queue_count(),
+        relay_counts,
         !app.state.projects.is_empty(),
         app.project_open_applications
             .iter()
@@ -321,6 +375,8 @@ fn workspace_view_key(view: WorkspaceView) -> &'static str {
 
 fn assistant_panel_key(panel: Option<AssistantPanel>) -> &'static str {
     match panel {
+        Some(AssistantPanel::SendQueue) => "send_queue",
+        Some(AssistantPanel::TaskRelay) => "task_relay",
         Some(AssistantPanel::AIStats) => "ai_stats",
         Some(AssistantPanel::ServerInfo) => "server_info",
         Some(AssistantPanel::Ssh) => "ssh",

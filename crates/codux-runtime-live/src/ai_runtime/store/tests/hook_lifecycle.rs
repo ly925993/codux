@@ -140,6 +140,8 @@ fn runtime_snapshot_sets_restored_session_baseline() {
             usage_amounts: Vec::new(),
             baseline_usage_amounts: Vec::new(),
             updated_at: 1005.0,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(900.0),
             completed_at: None,
             response_state: Some("responding".to_string()),

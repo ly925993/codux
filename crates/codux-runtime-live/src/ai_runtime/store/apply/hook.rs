@@ -241,6 +241,14 @@ pub(in crate::ai_runtime::store) fn apply_hook_unlocked(
             .map(|session| session.updated_at)
             .unwrap_or(0.0)
             .max(now),
+        // Hook timestamps are real lifecycle activity, unlike supervisor
+        // heartbeat renewal. Prompt submission also confirms native input.
+        runtime_activity_at: Some(now),
+        last_user_input_at: if event.kind == "promptSubmitted" {
+            Some(now)
+        } else {
+            base.and_then(|session| session.last_user_input_at)
+        },
         active_turn_started_at,
         runtime_turn_started_at: if state == "responding" {
             base.and_then(|session| session.runtime_turn_started_at)

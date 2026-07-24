@@ -46,7 +46,8 @@ pub use screen_signal::ScreenSignal;
 pub use snapshot::{
     AILatestCompletion, AIPlanItem, AIPlanSnapshot, AIProjectPhase, AIProjectStateSnapshot,
     AIProjectTotals, AIRuntimeCompletionEvent, AIRuntimeContextSnapshot, AIRuntimeProbeRequest,
-    AIRuntimeStateSnapshot, AISessionSnapshot, AIUsageAmountSnapshot,
+    AIRuntimeSessionCompletionEvent, AIRuntimeStateSnapshot, AISessionSnapshot,
+    AIUsageAmountSnapshot,
 };
 pub use state::{canonical_tool_name, runtime_state_for_hook_kind, status_for_runtime_state};
 pub use store::{AIRuntimeStateMutation, AIRuntimeStateStore};

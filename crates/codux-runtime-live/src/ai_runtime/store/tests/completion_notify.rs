@@ -30,6 +30,8 @@ fn same_second_completion_snapshot_after_prompt_completes() {
             usage_amounts: Vec::new(),
             baseline_usage_amounts: Vec::new(),
             updated_at: 1020.743,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(1000.0),
             completed_at: Some(1020.0),
             response_state: Some("idle".to_string()),
@@ -90,6 +92,8 @@ fn later_probe_for_same_completed_turn_does_not_notify_twice() {
             usage_amounts: Vec::new(),
             baseline_usage_amounts: Vec::new(),
             updated_at: 1036.0,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(1020.0),
             completed_at: Some(1030.0),
             response_state: Some("idle".to_string()),
@@ -103,6 +107,7 @@ fn later_probe_for_same_completed_turn_does_not_notify_twice() {
 
     assert!(probe.did_change);
     assert!(probe.completion.is_none());
+    assert!(probe.session_completions.is_empty());
     let snapshot = store.snapshot();
     assert_eq!(snapshot.completion_count, 1);
     assert_eq!(snapshot.sessions[0].total_tokens, 200);
@@ -152,6 +157,7 @@ fn same_session_next_prompt_completion_notifies_again() {
 
     assert!(second.did_change);
     assert!(second.completion.is_some());
+    assert_eq!(second.session_completions.len(), 1);
 }
 #[test]
 fn running_session_suppresses_project_completion_badge() {
@@ -178,6 +184,12 @@ fn running_session_suppresses_project_completion_badge() {
 
     assert!(complete.did_change);
     assert!(complete.completion.is_none());
+    assert_eq!(complete.session_completions.len(), 1);
+    assert_eq!(complete.session_completions[0].terminal_id, "terminal-a");
+    assert_eq!(
+        complete.session_completions[0].ai_session_id.as_deref(),
+        Some("session-a")
+    );
     let snapshot = store.snapshot();
     assert_eq!(snapshot.running_count, 1);
     assert_eq!(snapshot.completion_count, 0);

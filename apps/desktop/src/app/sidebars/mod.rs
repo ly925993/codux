@@ -30,6 +30,8 @@ pub(in crate::app) use server_info::ServerInfoSidebarView;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum AssistantPanel {
+    SendQueue,
+    TaskRelay,
     AIStats,
     ServerInfo,
     Ssh,

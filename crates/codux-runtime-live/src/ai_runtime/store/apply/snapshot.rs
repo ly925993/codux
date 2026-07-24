@@ -280,6 +280,14 @@ pub(in crate::ai_runtime::store) fn apply_runtime_snapshot_unlocked(
         baseline_resolved,
         session_origin: None,
         updated_at: snapshot_updated_at,
+        runtime_activity_at: latest_timestamp(
+            session.runtime_activity_at,
+            snapshot.runtime_activity_at,
+        ),
+        last_user_input_at: latest_timestamp(
+            session.last_user_input_at,
+            snapshot.last_user_input_at,
+        ),
         active_turn_started_at,
         runtime_turn_started_at,
         completed_turn_started_at,
@@ -313,6 +321,13 @@ pub(in crate::ai_runtime::store) fn apply_runtime_snapshot_unlocked(
     }
     core.sessions.insert(terminal_id.to_string(), next);
     true
+}
+
+fn latest_timestamp(current: Option<f64>, next: Option<f64>) -> Option<f64> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current.max(next)),
+        (current, next) => current.or(next),
+    }
 }
 
 fn is_silent_stale_prelaunch_open_turn(snapshot: &AIRuntimeContextSnapshot) -> bool {

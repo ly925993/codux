@@ -147,6 +147,8 @@ fn probe_claude_runtime_from_paths(
             .updated_at
             .max(stale_completed_at.unwrap_or(request.updated_at))
             .max(request.updated_at),
+        runtime_activity_at: aggregate.last_event_at,
+        last_user_input_at: (aggregate.last_user_at > 0.0).then_some(aggregate.last_user_at),
         started_at,
         completed_at,
         response_state,

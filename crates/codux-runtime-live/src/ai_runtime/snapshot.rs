@@ -35,6 +35,14 @@ pub struct AISessionSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<f64>,
     pub updated_at: f64,
+    /// Latest real transcript/runtime event, excluding supervisor heartbeat
+    /// renewal. Desktop queues use this to wait for an Agent input boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_activity_at: Option<f64>,
+    /// Latest user message observed in the Agent's own session storage. This
+    /// acknowledges that a native follow-up queue consumed a delivered prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_user_input_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn_started_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +164,32 @@ pub struct AIRuntimeCompletionEvent {
     pub session: Option<AISessionSnapshot>,
 }
 
+/// A single Agent session finished one turn. Unlike the project-level
+/// completion event, this signal is never suppressed by sibling sessions and
+/// can therefore advance a relay bound to one terminal/session safely.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AIRuntimeSessionCompletionEvent {
+    pub id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub terminal_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_instance_id: Option<String>,
+    pub tool: String,
+    #[serde(rename = "aiSessionId", skip_serializing_if = "Option::is_none")]
+    pub ai_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_started_at: Option<f64>,
+    pub completed_at: f64,
+    pub has_completed_turn: bool,
+    pub was_interrupted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_assistant_preview: Option<String>,
+    pub total_tokens: i64,
+    pub cached_input_tokens: i64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AIRuntimeProbeRequest {
@@ -193,6 +227,10 @@ pub struct AIRuntimeContextSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub baseline_usage_amounts: Vec<AIUsageAmountSnapshot>,
     pub updated_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_activity_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_user_input_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

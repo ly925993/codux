@@ -3,6 +3,7 @@ use crate::ai_runtime::{
     snapshot::{AIRuntimeContextSnapshot, AIRuntimeProbeRequest, AIUsageAmountSnapshot},
     state::normalized_string,
 };
+use codux_ai_history::omp_session::OmpSessionRole;
 use codux_ai_history::omp_session::parse_omp_session;
 
 pub(crate) fn probe_omp_runtime(
@@ -27,6 +28,12 @@ pub(crate) fn probe_omp_runtime(
         })
         .into_iter()
         .collect();
+    let last_user_input_at = session
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.role == OmpSessionRole::User)
+        .map(|event| event.timestamp);
 
     Some(AIRuntimeContextSnapshot {
         tool: "omp".to_string(),
@@ -41,6 +48,8 @@ pub(crate) fn probe_omp_runtime(
         usage_amounts,
         baseline_usage_amounts: Vec::new(),
         updated_at: session.updated_at.max(request.updated_at),
+        runtime_activity_at: (session.updated_at > 0.0).then_some(session.updated_at),
+        last_user_input_at,
         started_at: session.created_at,
         completed_at: None,
         response_state: None,

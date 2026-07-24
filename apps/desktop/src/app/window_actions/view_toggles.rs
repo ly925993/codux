@@ -190,6 +190,13 @@ impl CoduxApp {
         cx: &mut Context<Self>,
     ) {
         match panel {
+            AssistantPanel::SendQueue => {
+                self.refresh_agent_prompt_queue_view(cx);
+            }
+            AssistantPanel::TaskRelay => {
+                self.load_agent_task_relays(cx);
+                self.refresh_agent_task_relay_ui(cx);
+            }
             AssistantPanel::AIStats => {
                 self.refresh_ai_stats_panel_async(cx);
             }

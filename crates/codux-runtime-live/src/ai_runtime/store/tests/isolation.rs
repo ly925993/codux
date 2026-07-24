@@ -191,6 +191,8 @@ fn stale_runtime_completion_snapshot_after_prompt_stays_running() {
             usage_amounts: Vec::new(),
             baseline_usage_amounts: Vec::new(),
             updated_at: 1010.0,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(1000.0),
             completed_at: Some(1010.0),
             response_state: Some("idle".to_string()),

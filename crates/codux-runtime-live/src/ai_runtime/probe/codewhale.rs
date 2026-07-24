@@ -63,6 +63,8 @@ fn codewhale_snapshot_from_state(
         usage_amounts: Vec::new(),
         baseline_usage_amounts: Vec::new(),
         updated_at: state.updated_at.max(request.updated_at),
+        runtime_activity_at: Some(state.updated_at),
+        last_user_input_at: state.last_user_input_at,
         started_at: Some(state.started_at),
         completed_at,
         response_state,
@@ -82,6 +84,7 @@ struct CodeWhaleParsedState {
     assistant_preview: Option<String>,
     started_at: f64,
     updated_at: f64,
+    last_user_input_at: Option<f64>,
     completed_at: Option<f64>,
     response_state: Option<String>,
     has_completed_turn: bool,
@@ -205,6 +208,10 @@ fn parse_current_codewhale_session_file(
         .iter()
         .rev()
         .find_map(|message| message.get("role").and_then(|value| value.as_str()));
+    // CodeWhale's current file format updates metadata with every appended
+    // message. A trailing user row therefore provides a reliable native-input
+    // acknowledgement even though older rows may omit individual timestamps.
+    let last_user_input_at = (last_role == Some("user")).then_some(updated_at);
     let response_state = match last_role {
         Some("user") => Some("responding".to_string()),
         Some("assistant") => Some("idle".to_string()),
@@ -224,6 +231,7 @@ fn parse_current_codewhale_session_file(
         assistant_preview,
         started_at: created_at,
         updated_at,
+        last_user_input_at,
         completed_at: (response_state.as_deref() == Some("idle")).then_some(updated_at),
         response_state,
         has_completed_turn: last_role == Some("assistant"),

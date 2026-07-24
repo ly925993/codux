@@ -453,6 +453,12 @@ impl CoduxApp {
             remote_saved_host_ids,
             agent_prompt_queues: AgentPromptQueueStore::default(),
             agent_prompt_queue_view: None,
+            agent_task_relay_boards: HashMap::new(),
+            agent_task_relay_loaded: false,
+            agent_task_relay_loading: false,
+            agent_task_relay_persisting: HashMap::new(),
+            agent_task_relay_error: None,
+            agent_task_relay_view: None,
             project_column_view: None,
             task_column_view: None,
             task_column_header_view: None,
@@ -524,6 +530,7 @@ impl CoduxApp {
     /// after the entity is created, when a `Context<Self>` is available to drive
     /// the async attach chokepoint. A no-op for the common local-only boot.
     pub fn attach_boot_pending_terminals(&mut self, cx: &mut Context<Self>) {
+        self.load_agent_task_relays(cx);
         if self.boot_pending_terminals.is_empty() {
             return;
         }

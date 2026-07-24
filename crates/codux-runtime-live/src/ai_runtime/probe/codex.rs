@@ -77,6 +77,8 @@ pub(crate) fn probe_codex_runtime(
         usage_amounts: Vec::new(),
         baseline_usage_amounts: Vec::new(),
         updated_at,
+        runtime_activity_at: parsed.last_event_at,
+        last_user_input_at: parsed.last_user_message_at,
         started_at: parsed.started_at,
         completed_at: stale_completed_at.or(parsed.completed_at),
         response_state,

@@ -106,6 +106,12 @@ impl CoduxApp {
         }
         self.focus_active_terminal(window, cx);
         self.sync_terminal_state_after_layout_change(cx);
+        if self.assistant_panel == Some(AssistantPanel::SendQueue) {
+            let _ = self.agent_prompt_queue_view(window, cx);
+        } else if self.assistant_panel == Some(AssistantPanel::TaskRelay) {
+            let _ = self.agent_task_relay_view(window, cx);
+        }
+        self.invalidate_ui_region(cx, UiRegion::WorkspaceChrome);
         self.invalidate_terminal_workspace(cx);
     }
 

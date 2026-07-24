@@ -449,6 +449,15 @@ pub struct CoduxApp {
     /// terminal/session identity attached to every pending prompt.
     pub(in crate::app) agent_prompt_queues: AgentPromptQueueStore,
     pub(in crate::app) agent_prompt_queue_view: Option<gpui::Entity<AgentPromptQueueView>>,
+    /// Durable relay boards are cached in memory; redb load/save always runs on
+    /// the background executor so toolbar and panel rendering remain I/O-free.
+    pub(in crate::app) agent_task_relay_boards:
+        HashMap<String, codux_runtime::agent_task_relay::AgentTaskRelayBoard>,
+    pub(in crate::app) agent_task_relay_loaded: bool,
+    pub(in crate::app) agent_task_relay_loading: bool,
+    pub(in crate::app) agent_task_relay_persisting: HashMap<String, u64>,
+    pub(in crate::app) agent_task_relay_error: Option<String>,
+    pub(in crate::app) agent_task_relay_view: Option<gpui::Entity<AgentTaskRelayView>>,
     pub(in crate::app) project_column_view: Option<gpui::Entity<ProjectColumnView>>,
     pub(in crate::app) task_column_view: Option<gpui::Entity<TaskColumnView>>,
     pub(in crate::app) task_column_header_view: Option<gpui::Entity<TaskColumnHeaderView>>,

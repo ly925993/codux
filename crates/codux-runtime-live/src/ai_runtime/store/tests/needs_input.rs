@@ -160,6 +160,8 @@ fn claude_needs_input_clears_when_probe_sees_resume_after_completed_turn() {
             updated_at: 1030.0,
             // Log's user-message time sits slightly before the hook's prompt
             // wall-clock time (real-world skew between the two clocks).
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(1018.0),
             completed_at: Some(1010.0),
             response_state: Some("responding".to_string()),

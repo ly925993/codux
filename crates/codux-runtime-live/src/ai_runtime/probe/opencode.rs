@@ -128,6 +128,8 @@ fn opencode_snapshot_from_parsed(
         usage_amounts: Vec::new(),
         baseline_usage_amounts: Vec::new(),
         updated_at: parsed.updated_at.max(request.updated_at),
+        runtime_activity_at: (parsed.updated_at > 0.0).then_some(parsed.updated_at),
+        last_user_input_at: (parsed.last_user_at > 0.0).then_some(parsed.last_user_at),
         started_at: (parsed.last_user_at > 0.0).then_some(parsed.last_user_at),
         completed_at: has_completed_turn.then_some(parsed.last_completion_at),
         response_state,

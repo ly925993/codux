@@ -38,6 +38,8 @@ pub(crate) fn probe_agy_runtime(
         usage_amounts: Vec::new(),
         baseline_usage_amounts: Vec::new(),
         updated_at: conversation.last_seen_at.unwrap_or(request.updated_at),
+        runtime_activity_at: conversation.last_seen_at,
+        last_user_input_at: conversation.last_user_at,
         started_at: conversation.last_user_at,
         completed_at: agy_completed_at(&conversation),
         response_state,

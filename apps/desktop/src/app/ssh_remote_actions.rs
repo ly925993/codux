@@ -1491,6 +1491,7 @@ impl CoduxApp {
             .runtime_service
             .drain_ai_runtime_events_and_enqueue_memory();
         self.observe_agent_prompt_queue_events(&drained.events);
+        self.observe_agent_task_relay_events(&drained.events, cx);
         let terminal_status_changed =
             self.drain_and_apply_terminal_lifecycle_events(&drained.events);
         if terminal_status_changed {
@@ -1531,6 +1532,7 @@ impl CoduxApp {
             // Queue scheduling is event-driven by the same authoritative Agent
             // snapshot; no terminal-screen polling or render-time work is added.
             self.pump_agent_prompt_queues(cx);
+            self.pump_agent_task_relays(cx);
         }
         self.maybe_refresh_git_for_agent_activity(terminal_status_changed, cx);
         let remote_ai_stats_changed = self.apply_pushed_remote_ai_stats();
@@ -1709,6 +1711,7 @@ impl CoduxApp {
             .runtime_service
             .drain_ai_runtime_events_and_enqueue_memory();
         self.observe_agent_prompt_queue_events(&drained.events);
+        self.observe_agent_task_relay_events(&drained.events, cx);
         let terminal_status_changed =
             self.drain_and_apply_terminal_lifecycle_events(&drained.events);
         if terminal_status_changed {
@@ -1736,6 +1739,7 @@ impl CoduxApp {
             .runtime_service
             .summarize_ai_runtime_state_snapshot(&live_ai_snapshot);
         self.pump_agent_prompt_queues(cx);
+        self.pump_agent_task_relays(cx);
         self.state.refresh_ai_history_stats();
         let ai_activity_changed = super::ai_runtime_status::ai_activity_project_states_changed(
             &previous_project_states,

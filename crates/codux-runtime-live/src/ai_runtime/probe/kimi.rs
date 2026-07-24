@@ -58,6 +58,8 @@ pub(crate) fn probe_kimi_runtime(
         usage_amounts: Vec::new(),
         baseline_usage_amounts: Vec::new(),
         updated_at: parsed.updated_at.max(request.updated_at),
+        runtime_activity_at: (parsed.updated_at > 0.0).then_some(parsed.updated_at),
+        last_user_input_at: (parsed.last_turn_begin_at > 0.0).then_some(parsed.last_turn_begin_at),
         started_at: (parsed.last_turn_begin_at > 0.0).then_some(parsed.last_turn_begin_at),
         completed_at: (parsed.last_turn_end_at > 0.0).then_some(parsed.last_turn_end_at),
         response_state,
@@ -220,7 +222,13 @@ fn parse_flat_kimi_record(row: &Value, timestamp: Option<f64>, state: &mut KimiW
             state.uses_flat_records = true;
             state.model = kimi_model(row).or_else(|| state.model.clone());
         }
-        "turn.prompt" | "turn.steer" | "turn.cancel" => {
+        "turn.prompt" | "turn.steer" => {
+            state.uses_flat_records = true;
+            if let Some(timestamp) = timestamp {
+                state.last_turn_begin_at = state.last_turn_begin_at.max(timestamp);
+            }
+        }
+        "turn.cancel" => {
             state.uses_flat_records = true;
         }
         "usage.record" => {
@@ -451,6 +459,7 @@ mod tests {
         assert_eq!(parsed.output_tokens, 7);
         assert_eq!(parsed.cached_input_tokens, 54);
         assert_eq!(parsed.total_tokens, 21);
+        assert_eq!(parsed.last_turn_begin_at, 1_784_382_046.992);
         let _ = fs::remove_dir_all(dir);
     }
 

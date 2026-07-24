@@ -68,6 +68,8 @@ fn kiro_snapshot_from_parsed(
         usage_amounts: parsed.usage_amounts,
         baseline_usage_amounts: parsed.baseline_usage_amounts,
         updated_at: parsed.last_activity_at.max(request.updated_at),
+        runtime_activity_at: (parsed.last_activity_at > 0.0).then_some(parsed.last_activity_at),
+        last_user_input_at: (parsed.last_user_at > 0.0).then_some(parsed.last_user_at),
         started_at: (parsed.last_user_at > 0.0).then_some(parsed.last_user_at),
         completed_at: has_completed_turn.then_some(parsed.last_activity_at),
         response_state,

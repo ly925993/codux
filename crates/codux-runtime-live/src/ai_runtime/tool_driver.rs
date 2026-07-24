@@ -684,6 +684,8 @@ mod tests {
             usage_amounts: Vec::new(),
             baseline_usage_amounts: Vec::new(),
             baseline_resolved: false,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             started_at: Some(1.0),
             updated_at: 1.0,
             active_turn_started_at: None,

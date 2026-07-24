@@ -5,14 +5,14 @@ use super::{
     registry::AIRuntimeTerminalState,
     screen_signal::ScreenSignal,
     snapshot::{
-        AIProjectPhase, AIRuntimeCompletionEvent, AIRuntimeContextSnapshot, AIRuntimeStateSnapshot,
-        AISessionSnapshot,
+        AIProjectPhase, AIRuntimeCompletionEvent, AIRuntimeContextSnapshot,
+        AIRuntimeSessionCompletionEvent, AIRuntimeStateSnapshot, AISessionSnapshot,
     },
     state::canonical_tool_name,
     tool_driver::{process_liveness_tool, screen_starts_idle_tool},
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Mutex,
 };
 
@@ -33,7 +33,8 @@ pub use helpers::{probe_request_for_session, should_poll_runtime_session};
 #[cfg(test)]
 use resolve::merge_snapshot_into_hook;
 use summary::{
-    completed_phase_unlocked, drain_completion_events_unlocked, state_snapshot_unlocked,
+    completed_phase_unlocked, drain_completion_events_unlocked,
+    drain_session_completion_events_unlocked, state_snapshot_unlocked,
 };
 
 #[derive(Default)]
@@ -44,6 +45,8 @@ struct AIRuntimeStateCore {
     dismissed_completed_at: HashMap<String, f64>,
     latest_active_started_at_by_project: HashMap<String, f64>,
     notified_completion_keys: HashSet<String>,
+    notified_session_completion_keys: HashSet<String>,
+    notified_session_completion_order: VecDeque<String>,
 }
 
 #[derive(Default)]
@@ -56,11 +59,13 @@ pub struct AIRuntimeStateMutation {
     pub did_change: bool,
     pub completion: Option<AIRuntimeCompletionEvent>,
     pub completions: Vec<AIRuntimeCompletionEvent>,
+    pub session_completions: Vec<AIRuntimeSessionCompletionEvent>,
 }
 
 impl AIRuntimeStateMutation {
     pub fn merge(&mut self, next: AIRuntimeStateMutation) {
         self.did_change = self.did_change || next.did_change;
+        self.session_completions.extend(next.session_completions);
         if next.completions.is_empty() {
             if let Some(completion) = next.completion {
                 self.push_completion(completion);
@@ -85,10 +90,12 @@ fn mutation_from_change(did_change: bool, core: &mut AIRuntimeStateCore) -> AIRu
         did_change,
         completion: None,
         completions: Vec::new(),
+        session_completions: Vec::new(),
     };
     if !did_change {
         return mutation;
     }
+    mutation.session_completions = drain_session_completion_events_unlocked(core);
     for completion in drain_completion_events_unlocked(core) {
         mutation.push_completion(completion);
     }

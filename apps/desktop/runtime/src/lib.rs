@@ -1,3 +1,4 @@
+pub mod agent_task_relay;
 pub mod ai_history;
 // The AI usage-history engine lives in the shared `codux-ai-history` crate so
 // the headless agent can host the same stats with full parity. Re-export it

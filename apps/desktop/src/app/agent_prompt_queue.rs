@@ -12,9 +12,9 @@ pub(super) const MAX_AGENT_PROMPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_AGENT_QUEUE_SESSIONS: usize = 32;
 const NATIVE_SUBMISSION_GUARD: Duration = Duration::from_secs(5);
 const AGENT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
-const AGENT_QUEUE_VIEWPORT_RATIO: f32 = 0.28;
-const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 160.0;
-const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 360.0;
+const AGENT_FOLLOW_UP_ACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 200.0;
+const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 720.0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct AgentPromptQueueKey {
@@ -49,6 +49,9 @@ pub(super) struct AgentPromptItem {
     pub(super) preview: Arc<str>,
     pub(super) status: AgentPromptStatus,
     dispatch_started_at: Option<Instant>,
+    queued_activity_at: Option<u64>,
+    dispatch_user_input_at: Option<u64>,
+    dispatched_while_responding: bool,
 }
 
 #[derive(Clone)]
@@ -69,6 +72,10 @@ pub(super) struct AgentPromptQueueStore {
 }
 
 impl AgentPromptQueueStore {
+    pub(super) fn len(&self, key: &AgentPromptQueueKey) -> usize {
+        self.queues.get(key).map_or(0, VecDeque::len)
+    }
+
     pub(super) fn items(&self, key: &AgentPromptQueueKey) -> Vec<AgentPromptItem> {
         self.queues
             .get(key)
@@ -102,10 +109,20 @@ impl AgentPromptQueueStore {
         false
     }
 
+    #[cfg(test)]
     pub(super) fn enqueue(
         &mut self,
         key: AgentPromptQueueKey,
         text: String,
+    ) -> Result<u64, &'static str> {
+        self.enqueue_at(key, text, None)
+    }
+
+    pub(super) fn enqueue_at(
+        &mut self,
+        key: AgentPromptQueueKey,
+        text: String,
+        runtime_activity_at: Option<f64>,
     ) -> Result<u64, &'static str> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -137,6 +154,9 @@ impl AgentPromptQueueStore {
             text: Arc::from(text),
             status: AgentPromptStatus::Pending,
             dispatch_started_at: None,
+            queued_activity_at: runtime_activity_at.map(f64::to_bits),
+            dispatch_user_input_at: None,
+            dispatched_while_responding: false,
         });
         Ok(id)
     }
@@ -223,6 +243,9 @@ impl AgentPromptQueueStore {
         queue[index].preview = prompt_preview(&text);
         queue[index].text = Arc::from(text);
         queue[index].status = AgentPromptStatus::Pending;
+        queue[index].dispatch_started_at = None;
+        queue[index].dispatch_user_input_at = None;
+        queue[index].dispatched_while_responding = false;
         Ok(true)
     }
 
@@ -238,12 +261,26 @@ impl AgentPromptQueueStore {
             return false;
         }
         item.status = AgentPromptStatus::Pending;
+        item.dispatch_started_at = None;
+        item.dispatch_user_input_at = None;
+        item.dispatched_while_responding = false;
         true
     }
 
+    #[cfg(test)]
     pub(super) fn begin_dispatch(
         &mut self,
         key: &AgentPromptQueueKey,
+    ) -> Option<AgentPromptDispatch> {
+        self.begin_dispatch_for_runtime(key, "idle", None, None)
+    }
+
+    pub(super) fn begin_dispatch_for_runtime(
+        &mut self,
+        key: &AgentPromptQueueKey,
+        runtime_state: &str,
+        runtime_activity_at: Option<f64>,
+        last_user_input_at: Option<f64>,
     ) -> Option<AgentPromptDispatch> {
         // A native Enter has already handed a prompt to this Agent. Keep the
         // next queued item blocked until a supervisor event confirms that the
@@ -268,8 +305,21 @@ impl AgentPromptQueueStore {
         if !matches!(item.status, AgentPromptStatus::Pending) {
             return None;
         }
+        let dispatched_while_responding = runtime_state == "responding";
+        if runtime_state != "idle"
+            && (!dispatched_while_responding
+                || last_user_input_at.is_none()
+                || !timestamp_advanced(
+                    item.queued_activity_at,
+                    runtime_activity_at.map(f64::to_bits),
+                ))
+        {
+            return None;
+        }
         item.status = AgentPromptStatus::Dispatching;
         item.dispatch_started_at = Some(Instant::now());
+        item.dispatch_user_input_at = last_user_input_at.map(f64::to_bits);
+        item.dispatched_while_responding = dispatched_while_responding;
         Some(AgentPromptDispatch {
             key: key.clone(),
             item_id: item.id,
@@ -314,10 +364,19 @@ impl AgentPromptQueueStore {
         let Some(item) = self.queues.get_mut(key).and_then(|queue| queue.front_mut()) else {
             return false;
         };
+        let timeout = if item.dispatched_while_responding {
+            // Native follow-up queues may legitimately wait through a long tool
+            // call before consuming the message. Keep the short timeout for an
+            // idle composer, but do not mislabel normal queued steering as a
+            // failure after only a few seconds.
+            AGENT_FOLLOW_UP_ACK_TIMEOUT
+        } else {
+            AGENT_ACK_TIMEOUT
+        };
         if !matches!(item.status, AgentPromptStatus::AwaitingAgent)
             || !item
                 .dispatch_started_at
-                .is_some_and(|started| started.elapsed() >= AGENT_ACK_TIMEOUT)
+                .is_some_and(|started| started.elapsed() >= timeout)
         {
             return false;
         }
@@ -328,7 +387,16 @@ impl AgentPromptQueueStore {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn acknowledge_agent_started(&mut self, key: &AgentPromptQueueKey) -> bool {
+        self.acknowledge_agent_started_at(key, None)
+    }
+
+    pub(super) fn acknowledge_agent_started_at(
+        &mut self,
+        key: &AgentPromptQueueKey,
+        last_user_input_at: Option<f64>,
+    ) -> bool {
         let native_acknowledged = self.native_submissions.remove(key).is_some();
         let Some(queue) = self.queues.get_mut(key) else {
             return native_acknowledged;
@@ -341,6 +409,14 @@ impl AgentPromptQueueStore {
         }) else {
             return native_acknowledged;
         };
+        if queue[index].dispatched_while_responding
+            && !timestamp_advanced(
+                queue[index].dispatch_user_input_at,
+                last_user_input_at.map(f64::to_bits),
+            )
+        {
+            return native_acknowledged;
+        }
         if matches!(queue[index].status, AgentPromptStatus::Dispatching) {
             queue[index].status = AgentPromptStatus::DispatchingAcknowledged;
         } else {
@@ -389,6 +465,14 @@ impl AgentPromptQueueStore {
         if self.queues.get(key).is_some_and(VecDeque::is_empty) {
             self.queues.remove(key);
         }
+    }
+}
+
+fn timestamp_advanced(baseline: Option<u64>, current: Option<u64>) -> bool {
+    match (baseline, current) {
+        (Some(baseline), Some(current)) => f64::from_bits(current) > f64::from_bits(baseline),
+        (None, Some(_)) => true,
+        _ => false,
     }
 }
 
@@ -486,6 +570,7 @@ impl CoduxApp {
             tool: session.tool.clone(),
         };
         let runtime_state = session.runtime_state.clone();
+        let runtime_activity_at = session.runtime_activity_at;
         if let Some(provisional) = self
             .agent_prompt_queues
             .keys()
@@ -517,11 +602,15 @@ impl CoduxApp {
         if runtime_state == "idle"
             && self.agent_prompt_queues.items(&key).is_empty()
             && !self.agent_prompt_queues.native_submission_pending(&key)
+            && !self.agent_task_relay_owns_ack(&key)
         {
             self.agent_prompt_queues.note_native_submission(key);
             return TerminalAgentPromptDisposition::PassThrough;
         }
-        match self.agent_prompt_queues.enqueue(key, prompt) {
+        match self
+            .agent_prompt_queues
+            .enqueue_at(key, prompt, runtime_activity_at)
+        {
             Ok(_) => {
                 self.refresh_agent_prompt_queue_view(cx);
                 TerminalAgentPromptDisposition::Queued
@@ -548,7 +637,9 @@ impl CoduxApp {
         }
     }
 
-    fn active_agent_prompt_target(&self) -> Option<(AgentPromptQueueKey, String)> {
+    pub(in crate::app) fn active_agent_prompt_target(
+        &self,
+    ) -> Option<(AgentPromptQueueKey, String)> {
         let (_, slot) = self.active_terminal_slot()?;
         let terminal_id = slot.terminal_id.as_deref()?.trim();
         let pane = slot.pane.as_ref()?;
@@ -577,6 +668,12 @@ impl CoduxApp {
             },
             session.runtime_state.clone(),
         ))
+    }
+
+    pub(in crate::app) fn active_agent_prompt_queue_count(&self) -> usize {
+        self.active_agent_prompt_target()
+            .map(|(key, _)| self.agent_prompt_queues.len(&key))
+            .unwrap_or_default()
     }
 
     pub(in crate::app) fn agent_prompt_queue_view(
@@ -643,6 +740,7 @@ impl CoduxApp {
     }
 
     pub(in crate::app) fn refresh_agent_prompt_queue_view(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_ui_region(cx, UiRegion::WorkspaceChrome);
         let Some(view) = self.agent_prompt_queue_view.clone() else {
             return;
         };
@@ -759,8 +857,17 @@ impl CoduxApp {
                         || old_key.ai_session_id == session.ai_session_id
                 })
                 .max_by(|left, right| left.updated_at.total_cmp(&right.updated_at))
-                .map(|session| (session.ai_session_id.clone(), session.runtime_state.clone()));
-            let Some((ai_session_id, runtime_state)) = session else {
+                .map(|session| {
+                    (
+                        session.ai_session_id.clone(),
+                        session.runtime_state.clone(),
+                        session.runtime_activity_at,
+                        session.last_user_input_at,
+                    )
+                });
+            let Some((ai_session_id, runtime_state, runtime_activity_at, last_user_input_at)) =
+                session
+            else {
                 continue;
             };
             let key = match (old_key.ai_session_id.as_ref(), ai_session_id) {
@@ -773,13 +880,20 @@ impl CoduxApp {
             queue_state_changed |= self.agent_prompt_queues.expire_unacknowledged(&key);
 
             if matches!(runtime_state.as_str(), "responding" | "needsInput") {
-                queue_state_changed |= self.agent_prompt_queues.acknowledge_agent_started(&key);
+                queue_state_changed |= self
+                    .agent_prompt_queues
+                    .acknowledge_agent_started_at(&key, last_user_input_at);
+            }
+            if runtime_state == "needsInput" {
                 continue;
             }
-            if runtime_state != "idle" {
+            if !matches!(runtime_state.as_str(), "idle" | "responding") {
                 continue;
             }
             if self.agent_prompt_queues.native_submission_pending(&key) {
+                continue;
+            }
+            if self.agent_task_relay_owns_ack(&key) {
                 continue;
             }
             let pane = self
@@ -812,7 +926,12 @@ impl CoduxApp {
             if !pane.try_reserve_agent_prompt_dispatch() {
                 continue;
             }
-            if let Some(dispatch) = self.agent_prompt_queues.begin_dispatch(&key) {
+            if let Some(dispatch) = self.agent_prompt_queues.begin_dispatch_for_runtime(
+                &key,
+                &runtime_state,
+                runtime_activity_at,
+                last_user_input_at,
+            ) {
                 ready.push((dispatch, pane));
             } else {
                 pane.cancel_agent_prompt_dispatch();
@@ -848,6 +967,7 @@ impl CoduxApp {
                     }
                     app.refresh_agent_prompt_queue_view(cx);
                     app.pump_agent_prompt_queues(cx);
+                    app.pump_agent_task_relays(cx);
                 });
             })
             .detach();
@@ -877,13 +997,16 @@ impl CoduxApp {
                     session.terminal_instance_id.clone()?,
                     session.tool.clone(),
                     session.ai_session_id.clone(),
+                    session.last_user_input_at.map(f64::to_bits),
                 ))
             })
             .collect::<HashSet<_>>();
 
         // A drained event batch can contain many full snapshots. Deduplicate
         // session acknowledgements before matching queue keys on the UI thread.
-        for (terminal_id, terminal_instance_id, tool, ai_session_id) in active_sessions {
+        for (terminal_id, terminal_instance_id, tool, ai_session_id, last_user_input_at) in
+            active_sessions
+        {
             let matching_keys = self
                 .agent_prompt_queues
                 .keys()
@@ -900,7 +1023,8 @@ impl CoduxApp {
                         .adopt_session_id(&old_key, ai_session_id.clone()),
                     _ => old_key,
                 };
-                self.agent_prompt_queues.acknowledge_agent_started(&key);
+                self.agent_prompt_queues
+                    .acknowledge_agent_started_at(&key, last_user_input_at.map(f64::from_bits));
             }
         }
     }
@@ -1101,10 +1225,10 @@ impl Render for AgentPromptQueueView {
 }
 
 fn agent_queue_list_max_height(viewport_height: f32) -> f32 {
-    // Keep enough queued messages visible on short screens while preventing
-    // the queue from crowding out the terminal and session sections.
-    (viewport_height * AGENT_QUEUE_VIEWPORT_RATIO)
-        .clamp(AGENT_QUEUE_MIN_LIST_HEIGHT, AGENT_QUEUE_MAX_LIST_HEIGHT)
+    // The queue now owns a full right rail. Reserve fixed space for the app
+    // toolbar, panel header and editor while letting its virtual list use the
+    // remainder on both compact and tall windows.
+    (viewport_height - 150.0).clamp(AGENT_QUEUE_MIN_LIST_HEIGHT, AGENT_QUEUE_MAX_LIST_HEIGHT)
 }
 
 fn agent_prompt_queue_row(
@@ -1357,6 +1481,56 @@ mod tests {
     }
 
     #[test]
+    fn responding_queue_dispatches_the_promoted_head_at_the_next_activity_boundary() {
+        let mut store = AgentPromptQueueStore::default();
+        let first = store
+            .enqueue_at(key(), "first".to_string(), Some(10.0))
+            .unwrap();
+        let second = store
+            .enqueue_at(key(), "second".to_string(), Some(10.0))
+            .unwrap();
+        assert!(store.promote(&key(), second));
+
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "responding", Some(10.0), Some(5.0))
+                .is_none()
+        );
+        let dispatch = store
+            .begin_dispatch_for_runtime(&key(), "responding", Some(11.0), Some(5.0))
+            .unwrap();
+        assert_eq!(dispatch.item_id, second);
+        assert_eq!(dispatch.text.as_ref(), "second");
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+        store.queues.get_mut(&key()).unwrap()[0].dispatch_started_at =
+            Some(Instant::now() - AGENT_ACK_TIMEOUT);
+        assert!(!store.expire_unacknowledged(&key()));
+
+        assert!(!store.acknowledge_agent_started_at(&key(), Some(5.0)));
+        assert!(store.acknowledge_agent_started_at(&key(), Some(6.0)));
+        assert_eq!(store.items(&key())[0].id, first);
+    }
+
+    #[test]
+    fn responding_queue_falls_back_to_idle_without_native_input_markers() {
+        let mut store = AgentPromptQueueStore::default();
+        store
+            .enqueue_at(key(), "portable fallback".to_string(), Some(10.0))
+            .unwrap();
+
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "responding", Some(11.0), None)
+                .is_none()
+        );
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "idle", Some(11.0), None)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn agent_ack_can_arrive_before_background_write_completion() {
         let mut store = AgentPromptQueueStore::default();
         store.enqueue(key(), "fast prompt".to_string()).unwrap();
@@ -1549,8 +1723,8 @@ mod tests {
 
     #[test]
     fn queue_height_scales_with_viewport_with_stable_bounds() {
-        assert_eq!(agent_queue_list_max_height(480.0), 160.0);
-        assert_eq!(agent_queue_list_max_height(1_000.0), 280.0);
-        assert_eq!(agent_queue_list_max_height(2_000.0), 360.0);
+        assert_eq!(agent_queue_list_max_height(300.0), 200.0);
+        assert_eq!(agent_queue_list_max_height(480.0), 330.0);
+        assert_eq!(agent_queue_list_max_height(1_000.0), 720.0);
     }
 }

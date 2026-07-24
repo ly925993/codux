@@ -1162,6 +1162,8 @@ mod tests {
             session_title: "Session".to_string(),
             started_at: Some(1.0),
             updated_at: 2.0,
+            runtime_activity_at: None,
+            last_user_input_at: None,
             event_count: 1,
             has_completed_turn: false,
             was_interrupted: false,

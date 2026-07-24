@@ -12,7 +12,7 @@ use crate::ai_runtime::{
     probe::{claude::ClaudeProbeCache, probe_runtime_with_claude_cache},
     registry::AIRuntimeRegistry,
     screen_signal::detect_screen_signal,
-    snapshot::{AIRuntimeCompletionEvent, AIRuntimeStateSnapshot},
+    snapshot::{AIRuntimeCompletionEvent, AIRuntimeSessionCompletionEvent, AIRuntimeStateSnapshot},
     state::canonical_tool_name,
     store::{AIRuntimeStateMutation, AIRuntimeStateStore},
     store::{probe_request_for_session, should_poll_runtime_session},
@@ -57,6 +57,9 @@ pub enum AIRuntimeSupervisorEvent {
     },
     Completion {
         completion: Box<AIRuntimeCompletionEvent>,
+    },
+    SessionCompletion {
+        completion: Box<AIRuntimeSessionCompletionEvent>,
     },
     TerminalStatus {
         status: TerminalStatusEvent,
@@ -470,6 +473,14 @@ fn after_mutation(
             },
         );
     }
+    for completion in mutation.session_completions {
+        push_event(
+            events,
+            AIRuntimeSupervisorEvent::SessionCompletion {
+                completion: Box::new(completion),
+            },
+        );
+    }
     let completions = if mutation.completions.is_empty() {
         mutation.completion.into_iter().collect::<Vec<_>>()
     } else {
@@ -782,8 +793,27 @@ const MAX_PENDING_SUPERVISOR_EVENTS: usize = 256;
 fn push_event(events: &Arc<Mutex<Vec<AIRuntimeSupervisorEvent>>>, event: AIRuntimeSupervisorEvent) {
     if let Ok(mut events) = events.lock() {
         if events.len() >= MAX_PENDING_SUPERVISOR_EVENTS {
-            let overflow = events.len() + 1 - MAX_PENDING_SUPERVISOR_EVENTS;
-            events.drain(..overflow);
+            // Completion signals drive durable relay progression. Prefer
+            // dropping a coalescible state/runtime event so high-frequency
+            // snapshots cannot evict the completion before the UI drains it.
+            let noncritical = events.iter().position(|pending| {
+                !matches!(
+                    pending,
+                    AIRuntimeSupervisorEvent::SessionCompletion { .. }
+                        | AIRuntimeSupervisorEvent::Completion { .. }
+                )
+            });
+            if let Some(index) = noncritical {
+                events.remove(index);
+            } else if matches!(
+                event,
+                AIRuntimeSupervisorEvent::SessionCompletion { .. }
+                    | AIRuntimeSupervisorEvent::Completion { .. }
+            ) {
+                events.remove(0);
+            } else {
+                return;
+            }
         }
         events.push(event);
     }
@@ -812,6 +842,74 @@ fn now_seconds() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_session_completion(id: &str) -> AIRuntimeSupervisorEvent {
+        AIRuntimeSupervisorEvent::SessionCompletion {
+            completion: Box::new(AIRuntimeSessionCompletionEvent {
+                id: id.to_string(),
+                project_id: "project-1".to_string(),
+                project_name: "Codux".to_string(),
+                terminal_id: "terminal-1".to_string(),
+                terminal_instance_id: Some("instance-1".to_string()),
+                tool: "codex".to_string(),
+                ai_session_id: Some("session-1".to_string()),
+                turn_started_at: Some(10.0),
+                completed_at: 20.0,
+                has_completed_turn: true,
+                was_interrupted: false,
+                latest_assistant_preview: Some("done".to_string()),
+                total_tokens: 100,
+                cached_input_tokens: 25,
+            }),
+        }
+    }
+
+    #[test]
+    fn supervisor_event_pressure_preserves_session_completion() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        push_event(&events, test_session_completion("relay-completion"));
+
+        for _ in 0..10_000 {
+            push_event(
+                &events,
+                AIRuntimeSupervisorEvent::State {
+                    snapshot: Box::default(),
+                },
+            );
+        }
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), MAX_PENDING_SUPERVISOR_EVENTS);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AIRuntimeSupervisorEvent::SessionCompletion { completion }
+                if completion.id == "relay-completion"
+        )));
+    }
+
+    #[test]
+    fn supervisor_event_queue_stays_bounded_when_only_completions_arrive() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for index in 0..=MAX_PENDING_SUPERVISOR_EVENTS {
+            push_event(
+                &events,
+                test_session_completion(&format!("completion-{index}")),
+            );
+        }
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), MAX_PENDING_SUPERVISOR_EVENTS);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AIRuntimeSupervisorEvent::SessionCompletion { completion }
+                if completion.id == "completion-0"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AIRuntimeSupervisorEvent::SessionCompletion { completion }
+                if completion.id == format!("completion-{MAX_PENDING_SUPERVISOR_EVENTS}")
+        )));
+    }
 
     #[test]
     fn supervisor_applies_hook_frames_and_drains_events() {

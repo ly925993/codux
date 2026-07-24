@@ -232,8 +232,8 @@ fn terminal_link_at_cell(
     )
 }
 
-/// Resolves only POSIX absolute paths. Filesystem access is intentionally deferred until the
-/// menu action runs so a slow or disconnected volume cannot stall terminal pointer handling.
+/// Resolves POSIX and Windows absolute paths. Filesystem access is intentionally deferred until
+/// the menu action runs so a slow or disconnected volume cannot stall terminal pointer handling.
 fn terminal_path_at_cell(
     content: &TerminalContent,
     point: TerminalCellPoint,
@@ -389,8 +389,14 @@ fn terminal_plain_url_at(row_text: &[(usize, char)], col: usize) -> Option<(Stri
     None
 }
 
-/// Finds the absolute path that owns `col`, including shell-quoted paths and backslash-escaped
-/// spaces. Delimiters commonly emitted by logs are removed without scanning beyond this row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalPathStyle {
+    Posix,
+    Windows,
+}
+
+/// Finds the absolute path that owns `col`, including shell-quoted paths and POSIX
+/// backslash-escaped spaces. Delimiters commonly emitted by logs are removed in memory.
 fn terminal_plain_path_at(row_text: &[(usize, char)], col: usize) -> Option<(String, Range<usize>)> {
     let clicked_index = row_text.iter().position(|(cell_col, ch)| {
         *cell_col <= col && col < cell_col.saturating_add(terminal_char_width(*ch))
@@ -398,9 +404,9 @@ fn terminal_plain_path_at(row_text: &[(usize, char)], col: usize) -> Option<(Str
     let chars: Vec<char> = row_text.iter().map(|(_, ch)| *ch).collect();
 
     for start in 0..chars.len() {
-        if chars[start] != '/' || !terminal_path_start_boundary(&chars, start) {
+        let Some(style) = terminal_path_style_at(&chars, start) else {
             continue;
-        }
+        };
 
         let quote = start
             .checked_sub(1)
@@ -414,7 +420,9 @@ fn terminal_plain_path_at(row_text: &[(usize, char)], col: usize) -> Option<(Str
                 end += 1;
                 continue;
             }
-            if ch == '\\' && quote != Some('\'') {
+            // On Windows, a backslash is a path separator. POSIX paths alone use it to escape
+            // spaces and shell delimiters in unquoted terminal output.
+            if style == TerminalPathStyle::Posix && ch == '\\' && quote != Some('\'') {
                 escaped = true;
                 end += 1;
                 continue;
@@ -439,16 +447,40 @@ fn terminal_plain_path_at(row_text: &[(usize, char)], col: usize) -> Option<(Str
             .0
             .saturating_add(terminal_char_width(row_text[end - 1].1));
         let raw: String = chars[start..end].iter().collect();
-        return Some((unescape_terminal_path(&raw), start_col..end_col));
+        let path = match style {
+            TerminalPathStyle::Posix => unescape_terminal_path(&raw),
+            TerminalPathStyle::Windows => raw,
+        };
+        return Some((path, start_col..end_col));
     }
     None
 }
 
-fn terminal_path_start_boundary(chars: &[char], start: usize) -> bool {
-    // A scheme separator starts a URL, not a POSIX path.
-    if start > 0 && chars[start - 1] == ':' && chars.get(start + 1) == Some(&'/') {
-        return false;
+fn terminal_path_style_at(chars: &[char], start: usize) -> Option<TerminalPathStyle> {
+    if !terminal_path_start_boundary(chars, start) {
+        return None;
     }
+
+    if chars.get(start) == Some(&'/') {
+        // A scheme separator starts a URL, not a POSIX path.
+        if start > 0 && chars[start - 1] == ':' && chars.get(start + 1) == Some(&'/') {
+            return None;
+        }
+        return Some(TerminalPathStyle::Posix);
+    }
+
+    let drive_path = chars.get(start).is_some_and(|ch| ch.is_ascii_alphabetic())
+        && chars.get(start + 1) == Some(&':')
+        && matches!(chars.get(start + 2), Some('/' | '\\'));
+    let unc_path = chars.get(start) == Some(&'\\')
+        && chars.get(start + 1) == Some(&'\\')
+        && chars
+            .get(start + 2)
+            .is_some_and(|ch| !ch.is_whitespace() && *ch != '\\');
+    (drive_path || unc_path).then_some(TerminalPathStyle::Windows)
+}
+
+fn terminal_path_start_boundary(chars: &[char], start: usize) -> bool {
     start == 0
         || chars[start - 1].is_whitespace()
         || matches!(chars[start - 1], '\'' | '"' | '=' | '(' | '[' | '{' | ',' | ':')

@@ -79,7 +79,6 @@ fn terminal_clipboard_paste_text(
         ) {
             TerminalClipboardTextPreference::Text(text) => return Some(text),
             TerminalClipboardTextPreference::RichClipboard => {}
-            TerminalClipboardTextPreference::None => return None,
         },
         Err(()) => return None,
     }
@@ -128,7 +127,6 @@ fn terminal_clipboard_external_paths_text(item: &ClipboardItem) -> Option<String
 enum TerminalClipboardTextPreference {
     Text(String),
     RichClipboard,
-    None,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -147,9 +145,11 @@ fn terminal_clipboard_text_preference(
                 text
             })
         }
-        Some(_) if paste_images_as_paths => TerminalClipboardTextPreference::RichClipboard,
-        None if paste_images_as_paths => TerminalClipboardTextPreference::RichClipboard,
-        _ => TerminalClipboardTextPreference::None,
+        Some(_) => TerminalClipboardTextPreference::RichClipboard,
+        // Windows Explorer may expose copied files only as CF_HDROP. Continue through GPUI's
+        // rich clipboard reader even when image-to-path pasting is disabled so ExternalPaths
+        // remains available independently of that setting.
+        None => TerminalClipboardTextPreference::RichClipboard,
     }
 }
 

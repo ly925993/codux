@@ -139,7 +139,7 @@ fn terminal_clipboard_image_payload_uses_rich_format_reading() {
     );
     assert_eq!(
         terminal_clipboard_text_preference(None, false, false),
-        TerminalClipboardTextPreference::None
+        TerminalClipboardTextPreference::RichClipboard
     );
 }
 
@@ -176,6 +176,19 @@ fn terminal_clipboard_external_paths_override_plain_text() {
     assert_eq!(
         terminal_clipboard_external_paths_text(&item),
         Some("'/tmp/codux source' ".to_string())
+    );
+
+    let windows_paths = vec![PathBuf::from(r"C:\Users\example\Codux Project")];
+    let windows_item = ClipboardItem {
+        // Windows Explorer exposes copied files through CF_HDROP, which GPUI maps to
+        // ExternalPaths even when CF_UNICODETEXT is absent.
+        entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths(
+            windows_paths.into(),
+        ))],
+    };
+    assert_eq!(
+        terminal_clipboard_external_paths_text(&windows_item),
+        Some(r#"'C:\Users\example\Codux Project' "#.to_string())
     );
 
     let plain_text = ClipboardItem::new_string("echo ready".to_string());

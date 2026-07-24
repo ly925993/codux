@@ -229,6 +229,63 @@ fn terminal_path_detection_handles_delimiters_quotes_and_escaped_spaces() {
 }
 
 #[test]
+fn terminal_path_detection_supports_windows_drive_and_unc_paths() {
+    let cases = [
+        (
+            r#"built C:\Users\example\codux\target\release\codux.exe, done"#,
+            "target",
+            r#"C:\Users\example\codux\target\release\codux.exe"#,
+        ),
+        (
+            r#"open "C:\Program Files\Codux\codux.exe" next"#,
+            "Codux",
+            r#"C:\Program Files\Codux\codux.exe"#,
+        ),
+        (
+            r#"open C:/Users/example/codux/target/release/codux.exe next"#,
+            "target",
+            "C:/Users/example/codux/target/release/codux.exe",
+        ),
+        (
+            r#"open "\\build-server\shared folder\codux.exe" next"#,
+            "shared",
+            r#"\\build-server\shared folder\codux.exe"#,
+        ),
+    ];
+
+    for (line, clicked_segment, expected) in cases {
+        let row_text: Vec<(usize, char)> =
+            line.char_indices().map(|(index, ch)| (index, ch)).collect();
+        let click_col = line.find(clicked_segment).expect("path segment exists");
+        let (path, _) = terminal_plain_path_at(&row_text, click_col).expect("path under pointer");
+        assert_eq!(path, expected);
+    }
+}
+
+#[test]
+fn terminal_windows_path_detection_follows_soft_wrapped_rows() {
+    let path = r#"C:\Users\example\codux\target\release\codux.exe"#;
+    let prefix = "open ";
+    let columns = 16;
+    let mut state = TerminalModel::new_for_test(columns, 8, 100);
+    state.process_bytes(format!("{prefix}{path}").as_bytes());
+    state.handle.publish_snapshot();
+    let snapshot = state.handle.snapshot();
+    let click_offset = prefix.len() + path.find("target").expect("target segment");
+
+    let detected = terminal_path_at_cell(
+        &snapshot,
+        TerminalCellPoint {
+            row: click_offset / columns,
+            col: click_offset % columns,
+        },
+    )
+    .expect("wrapped Windows path under pointer");
+
+    assert_eq!(detected.path, path);
+}
+
+#[test]
 fn terminal_path_detection_follows_soft_wrapped_rows() {
     let path = "/Users/example/codux/target/release/codux";
     let prefix = "open ";

@@ -33,6 +33,9 @@ pub struct AppSettings {
     pub ai_refresh: String,
     #[serde(default = "default_ai_background_refresh")]
     pub ai_background_refresh: String,
+    /// Controls whether supported Agent composer submissions use Codux's deferred queue.
+    #[serde(default = "default_true")]
+    pub agent_prompt_queue_enabled: bool,
     #[serde(default = "default_statistics_mode")]
     pub statistics_mode: String,
     #[serde(default = "default_file_open_default")]

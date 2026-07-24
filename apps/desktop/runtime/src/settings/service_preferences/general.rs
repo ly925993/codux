@@ -1,4 +1,20 @@
 impl SettingsService {
+    pub fn toggle_agent_prompt_queue_enabled(&self) -> Result<SettingsSummary, String> {
+        let mut raw = self.raw_settings();
+        let current = raw
+            .get("agentPromptQueueEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        // Preserve queued drafts separately; this switch controls interception
+        // and dispatch so disabling it never destroys user-authored content.
+        raw.insert(
+            "agentPromptQueueEnabled".to_string(),
+            Value::Bool(!current),
+        );
+        self.save_raw_settings(&raw)?;
+        Ok(summary_from_raw(&raw))
+    }
+
     pub fn set_language(&self, language: &str) -> Result<SettingsSummary, String> {
         let value = match language.trim() {
             "zh-Hans" | "zh-CN" | "simplifiedChinese" => "simplifiedChinese",

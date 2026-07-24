@@ -16,7 +16,29 @@ mod tests {
         assert!(summary.terminal_link_navigation);
         assert!(!summary.terminal_trim_trailing_whitespace_on_copy);
         assert!(!summary.terminal_trim_trailing_whitespace_on_paste);
+        assert!(summary.agent_prompt_queue_enabled);
         assert!(summary.wsl_enabled);
+    }
+
+    #[test]
+    fn agent_prompt_queue_defaults_on_and_persists_when_disabled() {
+        let support_dir = temp_dir("settings-agent-prompt-queue");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        assert!(service.reload_settings().agent_prompt_queue_enabled);
+        let settings = service
+            .toggle_agent_prompt_queue_enabled()
+            .expect("disable Agent prompt queue");
+        assert!(!settings.agent_prompt_queue_enabled);
+
+        crate::config::flush_all_config_writes();
+        assert!(
+            !SettingsService::new(support_dir.clone())
+                .summary()
+                .agent_prompt_queue_enabled
+        );
+
+        fs::remove_dir_all(support_dir).ok();
     }
 
     #[test]
@@ -204,6 +226,7 @@ mod tests {
         assert!(!store.snapshot().terminal_right_click_paste);
         assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_copy);
         assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_paste);
+        assert!(store.snapshot().agent_prompt_queue_enabled);
         crate::config::flush_all_config_writes();
 
         let saved = fs::read_to_string(settings_path).expect("saved settings");

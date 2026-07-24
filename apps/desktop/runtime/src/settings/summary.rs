@@ -106,6 +106,10 @@ fn summary_from_raw(raw: &Map<String, Value>) -> SettingsSummary {
             .and_then(Value::as_str)
             .map(|value| numeric_string(value, 600, 1, 86_400).to_string())
             .unwrap_or(defaults.ai_background_refresh),
+        agent_prompt_queue_enabled: raw
+            .get("agentPromptQueueEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.agent_prompt_queue_enabled),
         statistics_mode: raw
             .get("statisticsMode")
             .and_then(Value::as_str)

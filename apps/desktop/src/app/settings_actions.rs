@@ -185,6 +185,27 @@ impl CoduxApp {
         self.invalidate_ui_region(cx, UiRegion::Root);
     }
 
+    pub(super) fn toggle_agent_prompt_queue_enabled(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_agent_prompt_queue_enabled",
+            "saving Agent prompt queue setting",
+            move |service| service.toggle_agent_prompt_queue_enabled(),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                // Re-enabling may expose a queue whose active turn already
+                // completed while dispatch was paused.
+                app.pump_agent_prompt_queues(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
     pub(super) fn toggle_terminal_right_click_paste(
         &mut self,
         _window: &mut Window,

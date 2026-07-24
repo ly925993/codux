@@ -97,6 +97,12 @@ impl RuntimeService {
         self.update_settings_with_side_effects(|settings| settings.toggle_terminal_copy_on_select())
     }
 
+    pub fn toggle_agent_prompt_queue_enabled(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| {
+            settings.toggle_agent_prompt_queue_enabled()
+        })
+    }
+
     pub fn toggle_terminal_right_click_paste(&self) -> Result<SettingsSummary, String> {
         self.update_settings_with_side_effects(|settings| settings.toggle_terminal_right_click_paste())
     }

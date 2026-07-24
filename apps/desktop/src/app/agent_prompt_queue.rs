@@ -12,7 +12,6 @@ pub(super) const MAX_AGENT_PROMPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_AGENT_QUEUE_SESSIONS: usize = 32;
 const NATIVE_SUBMISSION_GUARD: Duration = Duration::from_secs(5);
 const AGENT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
-const AGENT_FOLLOW_UP_ACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 200.0;
 const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 720.0;
 
@@ -49,9 +48,17 @@ pub(super) struct AgentPromptItem {
     pub(super) preview: Arc<str>,
     pub(super) status: AgentPromptStatus,
     dispatch_started_at: Option<Instant>,
-    queued_activity_at: Option<u64>,
-    dispatch_user_input_at: Option<u64>,
-    dispatched_while_responding: bool,
+    /// Wall-clock fence for supervisor/terminal events. `Instant` remains the
+    /// monotonic timeout source, while this value lets cross-thread events
+    /// prove they were emitted after this specific dispatch began.
+    dispatch_started_wall_at: Option<u64>,
+    /// A retained Completed event must be newer than this fence. The fence is
+    /// advanced when the preceding queued prompt starts so one completion can
+    /// release only one message.
+    completion_barrier_at: u64,
+    /// An explicit retry may use an already-observed idle state because the
+    /// previous write failed after the turn had completed.
+    allow_current_idle: bool,
 }
 
 #[derive(Clone)]
@@ -64,6 +71,10 @@ pub(super) struct AgentPromptDispatch {
 #[derive(Default)]
 pub(super) struct AgentPromptQueueStore {
     queues: HashMap<AgentPromptQueueKey, VecDeque<AgentPromptItem>>,
+    /// Latest authoritative full-turn completion for queues that still contain
+    /// work. Windows PowerShell hooks publish this even when terminal-title OSC
+    /// updates or transcript snapshots arrive late.
+    completions: HashMap<AgentPromptQueueKey, u64>,
     /// Direct native submissions briefly block automatic dispatch until the
     /// supervisor confirms that the Agent started. Timestamps bound event-loss
     /// recovery so one missed transition cannot freeze a session forever.
@@ -109,20 +120,29 @@ impl AgentPromptQueueStore {
         false
     }
 
-    #[cfg(test)]
+    pub(super) fn note_completion(&mut self, key: &AgentPromptQueueKey, completed_at: f64) -> bool {
+        if !self.queues.contains_key(key) {
+            return false;
+        }
+        if let Some(current) = self.completions.get_mut(key) {
+            if completed_at <= f64::from_bits(*current) {
+                return false;
+            }
+            *current = completed_at.to_bits();
+            return true;
+        }
+        self.completions.insert(key.clone(), completed_at.to_bits());
+        true
+    }
+
+    pub(super) fn latest_completion_at(&self, key: &AgentPromptQueueKey) -> Option<f64> {
+        self.completions.get(key).copied().map(f64::from_bits)
+    }
+
     pub(super) fn enqueue(
         &mut self,
         key: AgentPromptQueueKey,
         text: String,
-    ) -> Result<u64, &'static str> {
-        self.enqueue_at(key, text, None)
-    }
-
-    pub(super) fn enqueue_at(
-        &mut self,
-        key: AgentPromptQueueKey,
-        text: String,
-        runtime_activity_at: Option<f64>,
     ) -> Result<u64, &'static str> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -154,9 +174,9 @@ impl AgentPromptQueueStore {
             text: Arc::from(text),
             status: AgentPromptStatus::Pending,
             dispatch_started_at: None,
-            queued_activity_at: runtime_activity_at.map(f64::to_bits),
-            dispatch_user_input_at: None,
-            dispatched_while_responding: false,
+            dispatch_started_wall_at: None,
+            completion_barrier_at: app_now_seconds().to_bits(),
+            allow_current_idle: false,
         });
         Ok(id)
     }
@@ -241,11 +261,12 @@ impl AgentPromptQueueStore {
             return Ok(false);
         };
         queue[index].preview = prompt_preview(&text);
+        let was_failed = matches!(queue[index].status, AgentPromptStatus::Failed(_));
         queue[index].text = Arc::from(text);
         queue[index].status = AgentPromptStatus::Pending;
         queue[index].dispatch_started_at = None;
-        queue[index].dispatch_user_input_at = None;
-        queue[index].dispatched_while_responding = false;
+        queue[index].dispatch_started_wall_at = None;
+        queue[index].allow_current_idle = was_failed;
         Ok(true)
     }
 
@@ -262,8 +283,8 @@ impl AgentPromptQueueStore {
         }
         item.status = AgentPromptStatus::Pending;
         item.dispatch_started_at = None;
-        item.dispatch_user_input_at = None;
-        item.dispatched_while_responding = false;
+        item.dispatch_started_wall_at = None;
+        item.allow_current_idle = true;
         true
     }
 
@@ -272,7 +293,7 @@ impl AgentPromptQueueStore {
         &mut self,
         key: &AgentPromptQueueKey,
     ) -> Option<AgentPromptDispatch> {
-        self.begin_dispatch_for_runtime(key, "idle", None, None)
+        self.begin_dispatch_for_runtime(key, "idle", Some(app_now_seconds() + 0.01), None)
     }
 
     pub(super) fn begin_dispatch_for_runtime(
@@ -280,7 +301,7 @@ impl AgentPromptQueueStore {
         key: &AgentPromptQueueKey,
         runtime_state: &str,
         runtime_activity_at: Option<f64>,
-        last_user_input_at: Option<f64>,
+        terminal_completed_at: Option<f64>,
     ) -> Option<AgentPromptDispatch> {
         // A native Enter has already handed a prompt to this Agent. Keep the
         // next queued item blocked until a supervisor event confirms that the
@@ -305,21 +326,21 @@ impl AgentPromptQueueStore {
         if !matches!(item.status, AgentPromptStatus::Pending) {
             return None;
         }
-        let dispatched_while_responding = runtime_state == "responding";
-        if runtime_state != "idle"
-            && (!dispatched_while_responding
-                || last_user_input_at.is_none()
-                || !timestamp_advanced(
-                    item.queued_activity_at,
-                    runtime_activity_at.map(f64::to_bits),
-                ))
-        {
+        let barrier = f64::from_bits(item.completion_barrier_at);
+        let idle_after_barrier = runtime_state == "idle"
+            && (item.allow_current_idle
+                || runtime_activity_at.is_some_and(|activity_at| activity_at + 0.001 >= barrier));
+        // A fresh PTY Completed event is the cross-platform fallback when an
+        // Agent's session file lags in responding after the turn has ended.
+        let completed_after_barrier =
+            terminal_completed_at.is_some_and(|completed_at| completed_at + 0.001 >= barrier);
+        if !idle_after_barrier && !(runtime_state == "responding" && completed_after_barrier) {
             return None;
         }
         item.status = AgentPromptStatus::Dispatching;
         item.dispatch_started_at = Some(Instant::now());
-        item.dispatch_user_input_at = last_user_input_at.map(f64::to_bits);
-        item.dispatched_while_responding = dispatched_while_responding;
+        item.dispatch_started_wall_at = Some(app_now_seconds().to_bits());
+        item.allow_current_idle = false;
         Some(AgentPromptDispatch {
             key: key.clone(),
             item_id: item.id,
@@ -353,6 +374,7 @@ impl AgentPromptQueueStore {
                 };
                 if matches!(queue[index].status, AgentPromptStatus::Failed(_)) {
                     queue[index].dispatch_started_at = None;
+                    queue[index].dispatch_started_wall_at = None;
                 }
             }
             _ => return false,
@@ -364,19 +386,10 @@ impl AgentPromptQueueStore {
         let Some(item) = self.queues.get_mut(key).and_then(|queue| queue.front_mut()) else {
             return false;
         };
-        let timeout = if item.dispatched_while_responding {
-            // Native follow-up queues may legitimately wait through a long tool
-            // call before consuming the message. Keep the short timeout for an
-            // idle composer, but do not mislabel normal queued steering as a
-            // failure after only a few seconds.
-            AGENT_FOLLOW_UP_ACK_TIMEOUT
-        } else {
-            AGENT_ACK_TIMEOUT
-        };
         if !matches!(item.status, AgentPromptStatus::AwaitingAgent)
             || !item
                 .dispatch_started_at
-                .is_some_and(|started| started.elapsed() >= timeout)
+                .is_some_and(|started| started.elapsed() >= AGENT_ACK_TIMEOUT)
         {
             return false;
         }
@@ -384,12 +397,20 @@ impl AgentPromptQueueStore {
             "Agent did not confirm this message; retry only if it was not received",
         ));
         item.dispatch_started_at = None;
+        item.dispatch_started_wall_at = None;
         true
     }
 
     #[cfg(test)]
     pub(super) fn acknowledge_agent_started(&mut self, key: &AgentPromptQueueKey) -> bool {
-        self.acknowledge_agent_started_at(key, None)
+        let acknowledged_at = self
+            .queues
+            .get(key)
+            .and_then(|queue| queue.front())
+            .and_then(|item| item.dispatch_started_wall_at)
+            .map(f64::from_bits)
+            .map(|started| started + 0.01);
+        self.acknowledge_agent_started_at(key, acknowledged_at)
     }
 
     pub(super) fn acknowledge_agent_started_at(
@@ -409,18 +430,60 @@ impl AgentPromptQueueStore {
         }) else {
             return native_acknowledged;
         };
-        if queue[index].dispatched_while_responding
-            && !timestamp_advanced(
-                queue[index].dispatch_user_input_at,
-                last_user_input_at.map(f64::to_bits),
-            )
-        {
+        let Some(acknowledged_at) = last_user_input_at else {
+            return native_acknowledged;
+        };
+        let Some(dispatch_started_at) = queue[index].dispatch_started_wall_at.map(f64::from_bits)
+        else {
+            return native_acknowledged;
+        };
+        if acknowledged_at + 0.001 < dispatch_started_at {
             return native_acknowledged;
         }
         if matches!(queue[index].status, AgentPromptStatus::Dispatching) {
             queue[index].status = AgentPromptStatus::DispatchingAcknowledged;
+            advance_completion_barrier(queue, index + 1, acknowledged_at);
         } else {
             queue.remove(index);
+            advance_completion_barrier(queue, index, acknowledged_at);
+            self.remove_empty_queue(key);
+        }
+        true
+    }
+
+    /// Accept the PTY's Working transition as a delivery acknowledgement when
+    /// hook/session-file updates lag behind on Windows. The wall-clock fence is
+    /// mandatory so a retained Working snapshot cannot acknowledge a later
+    /// prompt dispatched to the same terminal.
+    pub(super) fn acknowledge_agent_started_from_terminal_status(
+        &mut self,
+        key: &AgentPromptQueueKey,
+        status_updated_at: f64,
+    ) -> bool {
+        let Some(queue) = self.queues.get_mut(key) else {
+            return false;
+        };
+        let Some(index) = queue.iter().position(|item| {
+            matches!(
+                item.status,
+                AgentPromptStatus::Dispatching | AgentPromptStatus::AwaitingAgent
+            )
+        }) else {
+            return false;
+        };
+        let Some(dispatch_started_at) = queue[index].dispatch_started_wall_at.map(f64::from_bits)
+        else {
+            return false;
+        };
+        if status_updated_at + 0.001 < dispatch_started_at {
+            return false;
+        }
+        if matches!(queue[index].status, AgentPromptStatus::Dispatching) {
+            queue[index].status = AgentPromptStatus::DispatchingAcknowledged;
+            advance_completion_barrier(queue, index + 1, status_updated_at);
+        } else {
+            queue.remove(index);
+            advance_completion_barrier(queue, index, status_updated_at);
             self.remove_empty_queue(key);
         }
         true
@@ -446,6 +509,16 @@ impl AgentPromptQueueStore {
             .entry(new_key.clone())
             .or_default()
             .append(&mut queue);
+        if let Some(completed_at) = self.completions.remove(old_key) {
+            self.completions
+                .entry(new_key.clone())
+                .and_modify(|current| {
+                    if f64::from_bits(completed_at) > f64::from_bits(*current) {
+                        *current = completed_at;
+                    }
+                })
+                .or_insert(completed_at);
+        }
         if let Some(started) = self.native_submissions.remove(old_key) {
             self.native_submissions.insert(new_key.clone(), started);
         }
@@ -456,6 +529,8 @@ impl AgentPromptQueueStore {
         let before_queues = self.queues.len();
         let before_native = self.native_submissions.len();
         self.queues.retain(|key, _| key.terminal_id != terminal_id);
+        self.completions
+            .retain(|key, _| key.terminal_id != terminal_id);
         self.native_submissions
             .retain(|key, _| key.terminal_id != terminal_id);
         before_queues != self.queues.len() || before_native != self.native_submissions.len()
@@ -464,15 +539,21 @@ impl AgentPromptQueueStore {
     fn remove_empty_queue(&mut self, key: &AgentPromptQueueKey) {
         if self.queues.get(key).is_some_and(VecDeque::is_empty) {
             self.queues.remove(key);
+            self.completions.remove(key);
         }
     }
 }
 
-fn timestamp_advanced(baseline: Option<u64>, current: Option<u64>) -> bool {
-    match (baseline, current) {
-        (Some(baseline), Some(current)) => f64::from_bits(current) > f64::from_bits(baseline),
-        (None, Some(_)) => true,
-        _ => false,
+fn advance_completion_barrier(
+    queue: &mut VecDeque<AgentPromptItem>,
+    index: usize,
+    acknowledged_at: f64,
+) {
+    let Some(item) = queue.get_mut(index) else {
+        return;
+    };
+    if acknowledged_at > f64::from_bits(item.completion_barrier_at) {
+        item.completion_barrier_at = acknowledged_at.to_bits();
     }
 }
 
@@ -547,6 +628,9 @@ impl CoduxApp {
         submission: TerminalAgentDraftSubmission,
         cx: &mut Context<Self>,
     ) -> TerminalAgentPromptDisposition {
+        if !self.state.settings.agent_prompt_queue_enabled {
+            return TerminalAgentPromptDisposition::PassThrough;
+        }
         let Some(session) = self
             .state
             .ai_runtime_state
@@ -570,7 +654,6 @@ impl CoduxApp {
             tool: session.tool.clone(),
         };
         let runtime_state = session.runtime_state.clone();
-        let runtime_activity_at = session.runtime_activity_at;
         if let Some(provisional) = self
             .agent_prompt_queues
             .keys()
@@ -607,10 +690,7 @@ impl CoduxApp {
             self.agent_prompt_queues.note_native_submission(key);
             return TerminalAgentPromptDisposition::PassThrough;
         }
-        match self
-            .agent_prompt_queues
-            .enqueue_at(key, prompt, runtime_activity_at)
-        {
+        match self.agent_prompt_queues.enqueue(key, prompt) {
             Ok(_) => {
                 self.refresh_agent_prompt_queue_view(cx);
                 TerminalAgentPromptDisposition::Queued
@@ -834,12 +914,31 @@ impl CoduxApp {
     /// Reconcile queue ownership against the latest supervisor state and start
     /// at most one background write per Agent session.
     pub(in crate::app) fn pump_agent_prompt_queues(&mut self, cx: &mut Context<Self>) {
+        if !self.state.settings.agent_prompt_queue_enabled {
+            return;
+        }
         let mut ready = Vec::new();
         let mut queue_state_changed = false;
         let editing = self
             .agent_prompt_queue_view
             .as_ref()
             .and_then(|view| view.read(cx).editing.clone());
+        // A single snapshot per pump bounds synchronization overhead regardless
+        // of queue length. Completed is the only terminal fallback accepted as
+        // a full-turn boundary; Idle alone can also represent cancelled input.
+        let terminal_statuses = self.runtime_service.ai_runtime_terminal_statuses();
+        let mut terminal_completions = HashMap::new();
+        for status in terminal_statuses.iter().filter(|status| {
+            status.state == codux_runtime::ai_runtime::TerminalStatusState::Completed
+        }) {
+            let Some(instance_id) = status.terminal_instance_id.as_deref() else {
+                continue;
+            };
+            terminal_completions
+                .entry((status.terminal_id.as_str(), instance_id))
+                .and_modify(|current: &mut f64| *current = current.max(status.updated_at))
+                .or_insert(status.updated_at);
+        }
         for old_key in self.agent_prompt_queues.keys() {
             let session = self
                 .state
@@ -926,11 +1025,20 @@ impl CoduxApp {
             if !pane.try_reserve_agent_prompt_dispatch() {
                 continue;
             }
+            let completed_at = [
+                self.agent_prompt_queues.latest_completion_at(&key),
+                terminal_completions
+                    .get(&(key.terminal_id.as_str(), key.terminal_instance_id.as_str()))
+                    .copied(),
+            ]
+            .into_iter()
+            .flatten()
+            .max_by(f64::total_cmp);
             if let Some(dispatch) = self.agent_prompt_queues.begin_dispatch_for_runtime(
                 &key,
                 &runtime_state,
                 runtime_activity_at,
-                last_user_input_at,
+                completed_at,
             ) {
                 ready.push((dispatch, pane));
             } else {
@@ -981,6 +1089,33 @@ impl CoduxApp {
         &mut self,
         events: &[codux_runtime::ai_runtime::AIRuntimeSupervisorEvent],
     ) {
+        // SessionCompletion is emitted by native hooks, including the Windows
+        // PowerShell bridge. Record it before the coalesced session summary is
+        // rebuilt so queue release does not depend on filesystem polling lag.
+        for completion in events.iter().filter_map(|event| match event {
+            codux_runtime::ai_runtime::AIRuntimeSupervisorEvent::SessionCompletion {
+                completion,
+            } => Some(completion.as_ref()),
+            _ => None,
+        }) {
+            let matching_keys = self
+                .agent_prompt_queues
+                .keys()
+                .into_iter()
+                .filter(|key| completion_matches_queue_key(completion, key))
+                .collect::<Vec<_>>();
+            for old_key in matching_keys {
+                let key = match (&old_key.ai_session_id, &completion.ai_session_id) {
+                    (None, Some(ai_session_id)) => self
+                        .agent_prompt_queues
+                        .adopt_session_id(&old_key, ai_session_id.clone()),
+                    _ => old_key,
+                };
+                self.agent_prompt_queues
+                    .note_completion(&key, completion.completed_at);
+            }
+        }
+
         let active_sessions = events
             .iter()
             .filter_map(|event| match event {
@@ -1027,7 +1162,53 @@ impl CoduxApp {
                     .acknowledge_agent_started_at(&key, last_user_input_at.map(f64::from_bits));
             }
         }
+
+        // PTY status is independent of Agent hook files, which makes it the
+        // portable acknowledgement path when Windows filesystem timestamps lag.
+        // Exact instance matching plus the dispatch timestamp fence prevents a
+        // stale Working status from releasing a newer queue item.
+        let mut queue_keys = None;
+        for status in events.iter().filter_map(|event| match event {
+            codux_runtime::ai_runtime::AIRuntimeSupervisorEvent::TerminalStatus { status }
+                if status.state == codux_runtime::ai_runtime::TerminalStatusState::Working =>
+            {
+                Some(status)
+            }
+            _ => None,
+        }) {
+            // Queue keys are materialized only for a Working transition, so
+            // unrelated supervisor batches stay allocation-free on this path.
+            let keys = queue_keys.get_or_insert_with(|| self.agent_prompt_queues.keys());
+            for key in keys
+                .iter()
+                .filter(|key| terminal_status_matches_queue_key(status, key))
+            {
+                self.agent_prompt_queues
+                    .acknowledge_agent_started_from_terminal_status(key, status.updated_at);
+            }
+        }
     }
+}
+
+fn terminal_status_matches_queue_key(
+    status: &codux_runtime::ai_runtime::TerminalStatusEvent,
+    key: &AgentPromptQueueKey,
+) -> bool {
+    status.terminal_id == key.terminal_id
+        && status.terminal_instance_id.as_deref() == Some(key.terminal_instance_id.as_str())
+}
+
+fn completion_matches_queue_key(
+    completion: &codux_runtime::ai_runtime::AIRuntimeSessionCompletionEvent,
+    key: &AgentPromptQueueKey,
+) -> bool {
+    completion.terminal_id == key.terminal_id
+        && completion.terminal_instance_id.as_deref() == Some(key.terminal_instance_id.as_str())
+        && completion.tool == key.tool
+        && key
+            .ai_session_id
+            .as_ref()
+            .is_none_or(|session_id| completion.ai_session_id.as_ref() == Some(session_id))
 }
 
 fn agent_queue_text(language: &str, key: &str, fallback: &str) -> String {
@@ -1463,6 +1644,29 @@ mod tests {
         }
     }
 
+    fn completion(
+        terminal_instance_id: &str,
+        ai_session_id: &str,
+        completed_at: f64,
+    ) -> codux_runtime::ai_runtime::AIRuntimeSessionCompletionEvent {
+        codux_runtime::ai_runtime::AIRuntimeSessionCompletionEvent {
+            id: "completion-1".to_string(),
+            project_id: "project-1".to_string(),
+            project_name: "Project".to_string(),
+            terminal_id: "terminal-1".to_string(),
+            terminal_instance_id: Some(terminal_instance_id.to_string()),
+            tool: "codex".to_string(),
+            ai_session_id: Some(ai_session_id.to_string()),
+            turn_started_at: Some(completed_at - 1.0),
+            completed_at,
+            has_completed_turn: true,
+            was_interrupted: false,
+            latest_assistant_preview: None,
+            total_tokens: 0,
+            cached_input_tokens: 0,
+        }
+    }
+
     #[test]
     fn dispatch_waits_for_agent_ack_before_releasing_head() {
         let mut store = AgentPromptQueueStore::default();
@@ -1481,51 +1685,107 @@ mod tests {
     }
 
     #[test]
-    fn responding_queue_dispatches_the_promoted_head_at_the_next_activity_boundary() {
+    fn responding_queue_waits_for_a_fresh_completed_turn() {
         let mut store = AgentPromptQueueStore::default();
-        let first = store
-            .enqueue_at(key(), "first".to_string(), Some(10.0))
-            .unwrap();
-        let second = store
-            .enqueue_at(key(), "second".to_string(), Some(10.0))
-            .unwrap();
+        let first = store.enqueue(key(), "first".to_string()).unwrap();
+        let second = store.enqueue(key(), "second".to_string()).unwrap();
         assert!(store.promote(&key(), second));
+        let completion_barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
 
         assert!(
             store
-                .begin_dispatch_for_runtime(&key(), "responding", Some(10.0), Some(5.0))
+                .begin_dispatch_for_runtime(
+                    &key(),
+                    "responding",
+                    None,
+                    Some(completion_barrier - 1.0)
+                )
                 .is_none()
         );
         let dispatch = store
-            .begin_dispatch_for_runtime(&key(), "responding", Some(11.0), Some(5.0))
+            .begin_dispatch_for_runtime(&key(), "responding", None, Some(completion_barrier + 0.01))
             .unwrap();
         assert_eq!(dispatch.item_id, second);
         assert_eq!(dispatch.text.as_ref(), "second");
         assert!(store.finish_write(&key(), dispatch.item_id, None));
-        store.queues.get_mut(&key()).unwrap()[0].dispatch_started_at =
-            Some(Instant::now() - AGENT_ACK_TIMEOUT);
-        assert!(!store.expire_unacknowledged(&key()));
-
-        assert!(!store.acknowledge_agent_started_at(&key(), Some(5.0)));
-        assert!(store.acknowledge_agent_started_at(&key(), Some(6.0)));
+        let dispatch_started_at = store.queues[&key()][0]
+            .dispatch_started_wall_at
+            .map(f64::from_bits)
+            .unwrap();
+        let stale_completion_at = completion_barrier + 0.01;
+        let working_at = dispatch_started_at.max(stale_completion_at) + 1.0;
+        assert!(store.acknowledge_agent_started_from_terminal_status(&key(), working_at));
         assert_eq!(store.items(&key())[0].id, first);
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "responding", None, Some(stale_completion_at))
+                .is_none()
+        );
     }
 
     #[test]
-    fn responding_queue_falls_back_to_idle_without_native_input_markers() {
+    fn windows_hook_completion_releases_only_one_queued_message() {
+        let mut store = AgentPromptQueueStore::default();
+        store.enqueue(key(), "first".to_string()).unwrap();
+        store.enqueue(key(), "second".to_string()).unwrap();
+        let barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
+        let completed_at = barrier + 1.0;
+        assert!(store.note_completion(&key(), completed_at));
+
+        let latest_completion_at = store.latest_completion_at(&key());
+        let dispatch = store
+            .begin_dispatch_for_runtime(&key(), "responding", None, latest_completion_at)
+            .unwrap();
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+        let working_at = completed_at + 1.0;
+        assert!(store.acknowledge_agent_started_from_terminal_status(&key(), working_at));
+
+        let stale_completion_at = store.latest_completion_at(&key());
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "responding", None, stale_completion_at,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hook_completion_requires_the_same_terminal_instance_and_agent_session() {
+        let current = key();
+        assert!(completion_matches_queue_key(
+            &completion("instance-1", "session-1", 10.0),
+            &current
+        ));
+        assert!(!completion_matches_queue_key(
+            &completion("instance-2", "session-1", 10.0),
+            &current
+        ));
+        assert!(!completion_matches_queue_key(
+            &completion("instance-1", "session-2", 10.0),
+            &current
+        ));
+    }
+
+    #[test]
+    fn queue_requires_a_fresh_idle_runtime_transition() {
         let mut store = AgentPromptQueueStore::default();
         store
-            .enqueue_at(key(), "portable fallback".to_string(), Some(10.0))
+            .enqueue(key(), "portable fallback".to_string())
             .unwrap();
+        let completion_barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
 
         assert!(
             store
-                .begin_dispatch_for_runtime(&key(), "responding", Some(11.0), None)
+                .begin_dispatch_for_runtime(&key(), "responding", None, None)
                 .is_none()
         );
         assert!(
             store
-                .begin_dispatch_for_runtime(&key(), "idle", Some(11.0), None)
+                .begin_dispatch_for_runtime(&key(), "idle", Some(completion_barrier - 1.0), None)
+                .is_none()
+        );
+        assert!(
+            store
+                .begin_dispatch_for_runtime(&key(), "idle", Some(completion_barrier + 0.01), None)
                 .is_some()
         );
     }
@@ -1543,6 +1803,60 @@ mod tests {
         ));
         assert!(store.finish_write(&key(), dispatch.item_id, None));
         assert!(store.items(&key()).is_empty());
+    }
+
+    #[test]
+    fn fresh_terminal_working_status_acknowledges_without_hook_timestamp_change() {
+        let mut store = AgentPromptQueueStore::default();
+        store.enqueue(key(), "portable ack".to_string()).unwrap();
+        let dispatch = store.begin_dispatch(&key()).unwrap();
+        let dispatch_started_at = store.queues[&key()][0]
+            .dispatch_started_wall_at
+            .map(f64::from_bits)
+            .unwrap();
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+
+        assert!(
+            store
+                .acknowledge_agent_started_from_terminal_status(&key(), dispatch_started_at + 0.01)
+        );
+        assert!(store.items(&key()).is_empty());
+    }
+
+    #[test]
+    fn stale_terminal_working_status_cannot_acknowledge_a_new_dispatch() {
+        let mut store = AgentPromptQueueStore::default();
+        store.enqueue(key(), "new prompt".to_string()).unwrap();
+        let dispatch = store.begin_dispatch(&key()).unwrap();
+        let dispatch_started_at = store.queues[&key()][0]
+            .dispatch_started_wall_at
+            .map(f64::from_bits)
+            .unwrap();
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+
+        assert!(
+            !store
+                .acknowledge_agent_started_from_terminal_status(&key(), dispatch_started_at - 1.0)
+        );
+        assert!(matches!(
+            store.items(&key())[0].status,
+            AgentPromptStatus::AwaitingAgent
+        ));
+    }
+
+    #[test]
+    fn terminal_working_status_requires_the_same_terminal_instance() {
+        let status = codux_runtime::ai_runtime::TerminalStatusEvent {
+            terminal_id: "terminal-1".to_string(),
+            terminal_instance_id: Some("instance-2".to_string()),
+            project_id: None,
+            worktree_id: None,
+            state: codux_runtime::ai_runtime::TerminalStatusState::Working,
+            updated_at: 10.0,
+            source: "test".to_string(),
+        };
+
+        assert!(!terminal_status_matches_queue_key(&status, &key()));
     }
 
     #[test]
@@ -1704,10 +2018,12 @@ mod tests {
     fn terminal_cleanup_releases_queues_and_native_guards() {
         let mut store = AgentPromptQueueStore::default();
         store.enqueue(key(), "pending".to_string()).unwrap();
+        store.note_completion(&key(), app_now_seconds());
         store.note_native_submission(key());
 
         assert!(store.remove_terminal("terminal-1"));
         assert!(store.items(&key()).is_empty());
+        assert!(store.latest_completion_at(&key()).is_none());
         assert!(!store.native_submission_pending(&key()));
     }
 

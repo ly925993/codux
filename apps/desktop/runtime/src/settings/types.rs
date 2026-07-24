@@ -32,6 +32,8 @@ pub struct SettingsSummary {
     pub git_refresh: String,
     pub ai_refresh: String,
     pub ai_background_refresh: String,
+    /// Queues supported Agent prompts and sends them only after the active turn completes.
+    pub agent_prompt_queue_enabled: bool,
     pub statistics_mode: String,
     pub sleep_mode: String,
     pub provider_count: usize,

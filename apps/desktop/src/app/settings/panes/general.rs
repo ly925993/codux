@@ -47,6 +47,25 @@ pub(super) fn settings_general_pane(
                 )
                 .into_any_element(),
                 settings_row(
+                    settings_text(
+                        language,
+                        "settings.agent_prompt_queue",
+                        "Agent Message Queue",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.agent_prompt_queue.help",
+                        "Queue messages while an Agent is working and send them after the current turn completes.",
+                    )),
+                    settings_toggle(
+                        "settings-agent-prompt-queue",
+                        settings.agent_prompt_queue_enabled,
+                        cx,
+                        |app, window, cx| app.toggle_agent_prompt_queue_enabled(window, cx),
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
                     settings_text(language, "settings.sleep_prevention", "Prevent System Sleep"),
                     Some(settings_text(
                         language,

@@ -329,6 +329,7 @@ impl CoduxApp {
         self.terminal_osc_titles.remove(terminal_id);
         self.terminal_search_open.remove(terminal_id);
         let queue_removed = self.agent_prompt_queues.remove_terminal(terminal_id);
+        self.clear_agent_prompt_queue_auto_open_for_terminal(terminal_id);
         self.clear_pane_agent_lifecycle(terminal_id) || queue_removed
     }
 

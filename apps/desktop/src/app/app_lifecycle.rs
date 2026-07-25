@@ -452,6 +452,7 @@ impl CoduxApp {
             remote_saved_hosts,
             remote_saved_host_ids,
             agent_prompt_queues: AgentPromptQueueStore::default(),
+            agent_prompt_queue_auto_open_suppressed: HashSet::new(),
             agent_prompt_queue_view: None,
             agent_task_relay_boards: HashMap::new(),
             agent_task_relay_loaded: false,

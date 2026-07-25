@@ -175,7 +175,7 @@ pub(crate) const TASK_COLUMN_FIXED_WIDTH: f32 = 240.0;
 pub(crate) const ASSISTANT_PANEL_WIDTH: f32 = 320.0;
 
 use self::{
-    agent_prompt_queue::{AgentPromptQueueStore, AgentPromptQueueView},
+    agent_prompt_queue::{AgentPromptQueueKey, AgentPromptQueueStore, AgentPromptQueueView},
     agent_task_relay::AgentTaskRelayView,
     ai_history_mapping::{
         AI_SESSION_FORK_TARGETS, ai_history_should_replace, ai_history_summary_from_project_state,

@@ -168,6 +168,11 @@ impl CoduxApp {
         if !feature_enabled {
             return;
         }
+        if self.assistant_panel == Some(AssistantPanel::SendQueue) {
+            // Closing the queue or choosing another tool is an explicit user
+            // preference for this Agent turn; new items must not steal focus.
+            self.suppress_agent_prompt_queue_auto_open();
+        }
         self.assistant_panel = if self.assistant_panel == Some(panel) {
             None
         } else {

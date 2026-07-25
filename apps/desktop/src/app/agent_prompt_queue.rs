@@ -820,14 +820,27 @@ impl CoduxApp {
             && !self.agent_prompt_queues.native_submission_pending(&key)
             && !self.agent_task_relay_owns_ack(&key)
         {
+            self.clear_agent_prompt_queue_auto_open_suppression(&key);
             self.agent_prompt_queues.note_native_submission(key);
             return TerminalAgentPromptDisposition::PassThrough;
         }
+        let queue_was_empty = self.agent_prompt_queues.len(&key) == 0;
+        let auto_open_suppressed = self.agent_prompt_queue_auto_open_is_suppressed(&key);
         match self
             .agent_prompt_queues
             .enqueue_at(key, prompt, runtime_activity_at)
         {
             Ok(_) => {
+                if should_auto_open_send_queue(
+                    queue_was_empty,
+                    self.assistant_panel,
+                    auto_open_suppressed,
+                ) {
+                    // Only the first queued item opens the panel. If the user
+                    // closes it while work remains, later items stay unobtrusive.
+                    self.assistant_panel = Some(AssistantPanel::SendQueue);
+                    self.invalidate_ui_region(cx, UiRegion::WorkspaceAssistant);
+                }
                 self.refresh_agent_prompt_queue_view(cx);
                 TerminalAgentPromptDisposition::Queued
             }
@@ -836,6 +849,32 @@ impl CoduxApp {
                 TerminalAgentPromptDisposition::Rejected
             }
         }
+    }
+
+    pub(in crate::app) fn suppress_agent_prompt_queue_auto_open(&mut self) {
+        let Some((key, _)) = self.active_agent_prompt_target() else {
+            return;
+        };
+        self.agent_prompt_queue_auto_open_suppressed.insert(key);
+    }
+
+    pub(in crate::app) fn clear_agent_prompt_queue_auto_open_for_terminal(
+        &mut self,
+        terminal_id: &str,
+    ) {
+        self.agent_prompt_queue_auto_open_suppressed
+            .retain(|key| key.terminal_id != terminal_id);
+    }
+
+    fn agent_prompt_queue_auto_open_is_suppressed(&self, key: &AgentPromptQueueKey) -> bool {
+        self.agent_prompt_queue_auto_open_suppressed
+            .iter()
+            .any(|suppressed| agent_queue_keys_share_session(Some(suppressed), Some(key)))
+    }
+
+    fn clear_agent_prompt_queue_auto_open_suppression(&mut self, key: &AgentPromptQueueKey) {
+        self.agent_prompt_queue_auto_open_suppressed
+            .retain(|suppressed| !agent_queue_keys_share_session(Some(suppressed), Some(key)));
     }
 
     fn active_agent_prompt_snapshot(&self) -> AgentPromptQueueSnapshot {
@@ -1261,6 +1300,9 @@ impl CoduxApp {
                 };
                 self.agent_prompt_queues
                     .note_completion(&key, completion.completed_at);
+                // The completion boundary starts a new auto-open opportunity;
+                // queued work remains unchanged and may dispatch immediately.
+                self.clear_agent_prompt_queue_auto_open_suppression(&key);
             }
         }
 
@@ -1336,6 +1378,16 @@ impl CoduxApp {
             }
         }
     }
+}
+
+fn should_auto_open_send_queue(
+    queue_was_empty: bool,
+    assistant_panel: Option<AssistantPanel>,
+    suppressed_for_turn: bool,
+) -> bool {
+    // Do not replace another tool the user is actively viewing. The toolbar
+    // badge still exposes the new queue item without disrupting that workflow.
+    queue_was_empty && assistant_panel.is_none() && !suppressed_for_turn
 }
 
 fn terminal_status_matches_queue_key(
@@ -1813,6 +1865,26 @@ mod tests {
             total_tokens: 0,
             cached_input_tokens: 0,
         }
+    }
+
+    #[test]
+    fn send_queue_auto_opens_only_for_the_first_item_when_no_tool_is_open() {
+        assert!(should_auto_open_send_queue(true, None, false));
+
+        // A non-empty queue means either the panel is already visible or the
+        // user closed it deliberately, so later messages must not reopen it.
+        assert!(!should_auto_open_send_queue(false, None, false));
+        assert!(!should_auto_open_send_queue(true, None, true));
+        assert!(!should_auto_open_send_queue(
+            true,
+            Some(AssistantPanel::TaskRelay),
+            false,
+        ));
+        assert!(!should_auto_open_send_queue(
+            true,
+            Some(AssistantPanel::SendQueue),
+            false,
+        ));
     }
 
     #[test]

@@ -448,6 +448,9 @@ pub struct CoduxApp {
     /// In-memory, per-Agent queues avoid disk work on the UI thread and keep
     /// terminal/session identity attached to every pending prompt.
     pub(in crate::app) agent_prompt_queues: AgentPromptQueueStore,
+    /// A manual panel dismissal suppresses auto-open only for the current Agent
+    /// turn. Completion or a fresh native submission clears the session key.
+    pub(in crate::app) agent_prompt_queue_auto_open_suppressed: HashSet<AgentPromptQueueKey>,
     pub(in crate::app) agent_prompt_queue_view: Option<gpui::Entity<AgentPromptQueueView>>,
     /// Durable relay boards are cached in memory; redb load/save always runs on
     /// the background executor so toolbar and panel rendering remain I/O-free.

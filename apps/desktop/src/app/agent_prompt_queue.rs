@@ -867,9 +867,10 @@ impl CoduxApp {
     }
 
     fn agent_prompt_queue_auto_open_is_suppressed(&self, key: &AgentPromptQueueKey) -> bool {
-        self.agent_prompt_queue_auto_open_suppressed
-            .iter()
-            .any(|suppressed| agent_queue_keys_share_session(Some(suppressed), Some(key)))
+        agent_prompt_queue_auto_open_is_suppressed_for(
+            &self.agent_prompt_queue_auto_open_suppressed,
+            key,
+        )
     }
 
     fn clear_agent_prompt_queue_auto_open_suppression(&mut self, key: &AgentPromptQueueKey) {
@@ -1390,6 +1391,15 @@ fn should_auto_open_send_queue(
     queue_was_empty && assistant_panel.is_none() && !suppressed_for_turn
 }
 
+fn agent_prompt_queue_auto_open_is_suppressed_for(
+    suppressed_keys: &HashSet<AgentPromptQueueKey>,
+    key: &AgentPromptQueueKey,
+) -> bool {
+    suppressed_keys
+        .iter()
+        .any(|suppressed| agent_queue_keys_share_session(Some(suppressed), Some(key)))
+}
+
 fn terminal_status_matches_queue_key(
     status: &codux_runtime::ai_runtime::TerminalStatusEvent,
     key: &AgentPromptQueueKey,
@@ -1888,6 +1898,31 @@ mod tests {
     }
 
     #[test]
+    fn send_queue_auto_open_suppression_is_isolated_per_terminal_instance() {
+        let suppressed_key = key();
+        let suppressed = HashSet::from([suppressed_key.clone()]);
+        assert!(agent_prompt_queue_auto_open_is_suppressed_for(
+            &suppressed,
+            &suppressed_key
+        ));
+
+        let mut other_terminal = suppressed_key.clone();
+        other_terminal.terminal_id = "terminal-2".to_string();
+        other_terminal.terminal_instance_id = "instance-2".to_string();
+        assert!(!agent_prompt_queue_auto_open_is_suppressed_for(
+            &suppressed,
+            &other_terminal
+        ));
+
+        let mut replacement_instance = suppressed_key;
+        replacement_instance.terminal_instance_id = "instance-replacement".to_string();
+        assert!(!agent_prompt_queue_auto_open_is_suppressed_for(
+            &suppressed,
+            &replacement_instance
+        ));
+    }
+
+    #[test]
     fn dispatch_waits_for_agent_ack_before_releasing_head() {
         let mut store = AgentPromptQueueStore::default();
         store.enqueue(key(), "first".to_string()).unwrap();
@@ -2293,6 +2328,29 @@ mod tests {
         assert!(store.items(&key()).is_empty());
         assert!(store.latest_completion_at(&key()).is_none());
         assert!(!store.native_submission_pending(&key()));
+    }
+
+    #[test]
+    fn terminal_cleanup_preserves_other_terminal_queues() {
+        let first = key();
+        let mut second = key();
+        second.terminal_id = "terminal-2".to_string();
+        second.terminal_instance_id = "instance-2".to_string();
+        second.ai_session_id = Some("session-2".to_string());
+
+        let mut store = AgentPromptQueueStore::default();
+        store
+            .enqueue(first.clone(), "first terminal".to_string())
+            .unwrap();
+        store
+            .enqueue(second.clone(), "second terminal".to_string())
+            .unwrap();
+        store.note_completion(&first, app_now_seconds());
+
+        assert!(store.remove_terminal(&first.terminal_id));
+        assert!(store.items(&first).is_empty());
+        assert_eq!(store.items(&second).len(), 1);
+        assert!(store.latest_completion_at(&second).is_none());
     }
 
     #[test]

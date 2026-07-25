@@ -17,7 +17,38 @@ mod tests {
         assert!(!summary.terminal_trim_trailing_whitespace_on_copy);
         assert!(!summary.terminal_trim_trailing_whitespace_on_paste);
         assert!(summary.agent_prompt_queue_enabled);
+        assert!(!summary.agent_prompt_queue_feature_enabled);
+        assert!(!summary.agent_task_relay_enabled);
         assert!(summary.wsl_enabled);
+    }
+
+    #[test]
+    fn agent_automation_features_default_off_and_persist_when_enabled() {
+        let support_dir = temp_dir("settings-agent-automation-features");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        let defaults = service.reload_settings();
+        assert!(!defaults.agent_prompt_queue_feature_enabled);
+        assert!(!defaults.agent_task_relay_enabled);
+        assert!(
+            service
+                .toggle_agent_prompt_queue_feature_enabled()
+                .expect("enable Agent prompt queue feature")
+                .agent_prompt_queue_feature_enabled
+        );
+        assert!(
+            service
+                .toggle_agent_task_relay_enabled()
+                .expect("enable Agent task relay")
+                .agent_task_relay_enabled
+        );
+
+        crate::config::flush_all_config_writes();
+        let persisted = SettingsService::new(support_dir.clone()).summary();
+        assert!(persisted.agent_prompt_queue_feature_enabled);
+        assert!(persisted.agent_task_relay_enabled);
+
+        fs::remove_dir_all(support_dir).ok();
     }
 
     #[test]
@@ -227,6 +258,8 @@ mod tests {
         assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_copy);
         assert!(!store.snapshot().terminal_trim_trailing_whitespace_on_paste);
         assert!(store.snapshot().agent_prompt_queue_enabled);
+        assert!(!store.snapshot().agent_prompt_queue_feature_enabled);
+        assert!(!store.snapshot().agent_task_relay_enabled);
         crate::config::flush_all_config_writes();
 
         let saved = fs::read_to_string(settings_path).expect("saved settings");

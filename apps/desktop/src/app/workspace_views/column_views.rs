@@ -313,10 +313,61 @@ pub(super) fn assistant_panel_available(
     snapshot: &WorkspaceAssistantSnapshot,
 ) -> bool {
     match panel {
-        AssistantPanel::SendQueue | AssistantPanel::TaskRelay => snapshot.has_project,
+        AssistantPanel::SendQueue => {
+            snapshot.has_project && snapshot.agent_prompt_queue_feature_enabled
+        }
+        AssistantPanel::TaskRelay => snapshot.has_project && snapshot.agent_task_relay_enabled,
         AssistantPanel::Ssh => true,
         AssistantPanel::ServerInfo => snapshot.has_project,
         _ => snapshot.has_project,
+    }
+}
+
+#[cfg(test)]
+mod assistant_feature_visibility_tests {
+    use super::*;
+
+    fn snapshot(queue_enabled: bool, relay_enabled: bool) -> WorkspaceAssistantSnapshot {
+        WorkspaceAssistantSnapshot {
+            panel: None,
+            has_project: true,
+            is_remote_project: false,
+            agent_prompt_queue_feature_enabled: queue_enabled,
+            agent_task_relay_enabled: relay_enabled,
+        }
+    }
+
+    #[test]
+    fn agent_automation_panels_require_their_independent_feature_switches() {
+        let disabled = snapshot(false, false);
+        assert!(!assistant_panel_available(
+            AssistantPanel::SendQueue,
+            &disabled
+        ));
+        assert!(!assistant_panel_available(
+            AssistantPanel::TaskRelay,
+            &disabled
+        ));
+
+        let queue_only = snapshot(true, false);
+        assert!(assistant_panel_available(
+            AssistantPanel::SendQueue,
+            &queue_only
+        ));
+        assert!(!assistant_panel_available(
+            AssistantPanel::TaskRelay,
+            &queue_only
+        ));
+
+        let relay_only = snapshot(false, true);
+        assert!(!assistant_panel_available(
+            AssistantPanel::SendQueue,
+            &relay_only
+        ));
+        assert!(assistant_panel_available(
+            AssistantPanel::TaskRelay,
+            &relay_only
+        ));
     }
 }
 
@@ -334,7 +385,11 @@ pub(super) fn workspace_toolbar_fingerprint(app: &CoduxApp) -> u64 {
             )
         }),
         app.state.settings.language.clone(),
-        app.state.settings.pet_enabled,
+        workspace_view_hash(&(
+            app.state.settings.pet_enabled,
+            app.state.settings.agent_prompt_queue_feature_enabled,
+            app.state.settings.agent_task_relay_enabled,
+        )),
         app.active_agent_prompt_queue_count(),
         relay_counts,
         !app.state.projects.is_empty(),

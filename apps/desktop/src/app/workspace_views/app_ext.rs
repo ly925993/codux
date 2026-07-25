@@ -119,6 +119,11 @@ impl CoduxApp {
                 .selected_project
                 .as_ref()
                 .is_some_and(|project| project.is_remote()),
+            agent_prompt_queue_feature_enabled: self
+                .state
+                .settings
+                .agent_prompt_queue_feature_enabled,
+            agent_task_relay_enabled: self.state.settings.agent_task_relay_enabled,
         }
     }
 

@@ -110,6 +110,14 @@ fn summary_from_raw(raw: &Map<String, Value>) -> SettingsSummary {
             .get("agentPromptQueueEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(defaults.agent_prompt_queue_enabled),
+        agent_prompt_queue_feature_enabled: raw
+            .get("agentPromptQueueFeatureEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.agent_prompt_queue_feature_enabled),
+        agent_task_relay_enabled: raw
+            .get("agentTaskRelayEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.agent_task_relay_enabled),
         statistics_mode: raw
             .get("statisticsMode")
             .and_then(Value::as_str)

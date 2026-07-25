@@ -15,6 +15,35 @@ impl SettingsService {
         Ok(summary_from_raw(&raw))
     }
 
+    pub fn toggle_agent_prompt_queue_feature_enabled(&self) -> Result<SettingsSummary, String> {
+        let mut raw = self.raw_settings();
+        let current = raw
+            .get("agentPromptQueueFeatureEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // Disabling the feature preserves existing drafts so a later re-enable
+        // can resume without losing user-authored queue content.
+        raw.insert(
+            "agentPromptQueueFeatureEnabled".to_string(),
+            Value::Bool(!current),
+        );
+        self.save_raw_settings(&raw)?;
+        Ok(summary_from_raw(&raw))
+    }
+
+    pub fn toggle_agent_task_relay_enabled(&self) -> Result<SettingsSummary, String> {
+        let mut raw = self.raw_settings();
+        let current = raw
+            .get("agentTaskRelayEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // Relay boards remain durable while disabled; the switch controls
+        // loading, visibility, and future automatic dispatch only.
+        raw.insert("agentTaskRelayEnabled".to_string(), Value::Bool(!current));
+        self.save_raw_settings(&raw)?;
+        Ok(summary_from_raw(&raw))
+    }
+
     pub fn set_language(&self, language: &str) -> Result<SettingsSummary, String> {
         let value = match language.trim() {
             "zh-Hans" | "zh-CN" | "simplifiedChinese" => "simplifiedChinese",

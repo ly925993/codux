@@ -126,6 +126,8 @@ impl Default for AppSettings {
             ai_refresh: default_ai_refresh(),
             ai_background_refresh: default_ai_background_refresh(),
             agent_prompt_queue_enabled: true,
+            agent_prompt_queue_feature_enabled: false,
+            agent_task_relay_enabled: false,
             statistics_mode: default_statistics_mode(),
             file_open_default: default_file_open_default(),
             theme: default_theme(),

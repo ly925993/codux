@@ -166,6 +166,8 @@ pub(in crate::app) struct WorkspaceAssistantSnapshot {
     pub(super) panel: Option<AssistantPanel>,
     pub(super) has_project: bool,
     pub(super) is_remote_project: bool,
+    pub(super) agent_prompt_queue_feature_enabled: bool,
+    pub(super) agent_task_relay_enabled: bool,
 }
 pub(in crate::app) fn workspace_view_hash<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

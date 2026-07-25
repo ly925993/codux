@@ -32,8 +32,12 @@ pub struct SettingsSummary {
     pub git_refresh: String,
     pub ai_refresh: String,
     pub ai_background_refresh: String,
-    /// Queues supported Agent prompts and sends them only after the active turn completes.
+    /// Defers queued prompts until the active Agent turn completes.
     pub agent_prompt_queue_enabled: bool,
+    /// Enables Codux prompt interception, queue storage, and the workspace queue button.
+    pub agent_prompt_queue_feature_enabled: bool,
+    /// Enables durable task relay boards and automatic task dispatch to Agent terminals.
+    pub agent_task_relay_enabled: bool,
     pub statistics_mode: String,
     pub sleep_mode: String,
     pub provider_count: usize,

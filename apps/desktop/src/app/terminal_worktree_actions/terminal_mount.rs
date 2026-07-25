@@ -392,7 +392,7 @@ impl CoduxApp {
                         // Keep the disabled path identical to the Agent's
                         // native composer behavior, including its own queue and
                         // approval handling.
-                        if !app.state.settings.agent_prompt_queue_enabled {
+                        if !app.state.settings.agent_prompt_queue_feature_enabled {
                             return TerminalAgentPromptDisposition::PassThrough;
                         }
                         app.route_terminal_agent_prompt(

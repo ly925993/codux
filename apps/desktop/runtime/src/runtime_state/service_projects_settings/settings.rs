@@ -103,6 +103,18 @@ impl RuntimeService {
         })
     }
 
+    pub fn toggle_agent_prompt_queue_feature_enabled(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| {
+            settings.toggle_agent_prompt_queue_feature_enabled()
+        })
+    }
+
+    pub fn toggle_agent_task_relay_enabled(&self) -> Result<SettingsSummary, String> {
+        self.update_settings_with_side_effects(|settings| {
+            settings.toggle_agent_task_relay_enabled()
+        })
+    }
+
     pub fn toggle_terminal_right_click_paste(&self) -> Result<SettingsSummary, String> {
         self.update_settings_with_side_effects(|settings| settings.toggle_terminal_right_click_paste())
     }

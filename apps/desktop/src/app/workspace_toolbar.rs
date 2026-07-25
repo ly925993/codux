@@ -47,8 +47,17 @@ impl CoduxApp {
             });
         let show_server_info_button = has_project_context
             && (remote_project_device_id.is_none() || connected_remote_project_device_id.is_some());
-        let send_queue_count = self.active_agent_prompt_queue_count();
-        let (relay_queue_count, _, relay_blocked) = self.active_agent_task_relay_counts();
+        let send_queue_enabled = self.state.settings.agent_prompt_queue_feature_enabled;
+        let task_relay_enabled = self.state.settings.agent_task_relay_enabled;
+        let show_agent_automation = send_queue_enabled || task_relay_enabled;
+        let send_queue_count = send_queue_enabled
+            .then(|| self.active_agent_prompt_queue_count())
+            .unwrap_or(0);
+        let (relay_queue_count, _, relay_blocked) = if task_relay_enabled {
+            self.active_agent_task_relay_counts()
+        } else {
+            (0, 0, false)
+        };
         let send_queue_label = workspace_i18n(
             &self.state.settings.language,
             "ai.queue.title",
@@ -147,26 +156,34 @@ impl CoduxApp {
                                 ),
                             )
                         })
-                        .child(workspace_toolbar_separator(cx))
-                        .child(workspace_assistant_button(
-                            send_queue_label,
-                            AssistantPanel::SendQueue,
-                            self.assistant_panel,
-                            has_project_context,
-                            send_queue_count,
-                            false,
-                            cx,
-                        ))
-                        .child(workspace_assistant_button(
-                            relay_label,
-                            AssistantPanel::TaskRelay,
-                            self.assistant_panel,
-                            has_project_context,
-                            relay_queue_count,
-                            relay_blocked,
-                            cx,
-                        ))
-                        .child(workspace_toolbar_separator(cx))
+                        .when(show_agent_automation, |this| {
+                            this.child(workspace_toolbar_separator(cx))
+                        })
+                        .when(send_queue_enabled, |this| {
+                            this.child(workspace_assistant_button(
+                                send_queue_label,
+                                AssistantPanel::SendQueue,
+                                self.assistant_panel,
+                                has_project_context,
+                                send_queue_count,
+                                false,
+                                cx,
+                            ))
+                        })
+                        .when(task_relay_enabled, |this| {
+                            this.child(workspace_assistant_button(
+                                relay_label,
+                                AssistantPanel::TaskRelay,
+                                self.assistant_panel,
+                                has_project_context,
+                                relay_queue_count,
+                                relay_blocked,
+                                cx,
+                            ))
+                        })
+                        .when(show_agent_automation, |this| {
+                            this.child(workspace_toolbar_separator(cx))
+                        })
                         .child(workspace_assistant_button(
                             "AI",
                             AssistantPanel::AIStats,

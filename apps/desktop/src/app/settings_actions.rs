@@ -196,9 +196,60 @@ impl CoduxApp {
             move |service| service.toggle_agent_prompt_queue_enabled(),
             |app, settings, cx| {
                 app.apply_async_settings_summary(settings);
-                // Re-enabling may expose a queue whose active turn already
-                // completed while dispatch was paused.
-                app.pump_agent_prompt_queues(cx);
+                // Changing dispatch policy may make the current queue head
+                // eligible immediately under the newly selected timing.
+                if app.state.settings.agent_prompt_queue_feature_enabled {
+                    app.pump_agent_prompt_queues(cx);
+                }
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    pub(super) fn toggle_agent_prompt_queue_feature_enabled(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_agent_prompt_queue_feature_enabled",
+            "saving Agent prompt queue feature setting",
+            move |service| service.toggle_agent_prompt_queue_feature_enabled(),
+            |app, settings, cx| {
+                let enabled = settings.agent_prompt_queue_feature_enabled;
+                app.apply_async_settings_summary(settings);
+                if enabled {
+                    app.pump_agent_prompt_queues(cx);
+                } else if app.assistant_panel == Some(AssistantPanel::SendQueue) {
+                    app.assistant_panel = None;
+                }
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
+    pub(super) fn toggle_agent_task_relay_enabled(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_settings_async(
+            "toggle_agent_task_relay_enabled",
+            "saving Agent task relay setting",
+            move |service| service.toggle_agent_task_relay_enabled(),
+            |app, settings, cx| {
+                let enabled = settings.agent_task_relay_enabled;
+                app.apply_async_settings_summary(settings);
+                if enabled {
+                    app.load_agent_task_relays(cx);
+                    app.pump_agent_task_relays(cx);
+                } else if app.assistant_panel == Some(AssistantPanel::TaskRelay) {
+                    app.assistant_panel = None;
+                }
                 app.invalidate_ui_region(cx, UiRegion::Root);
             },
             cx,

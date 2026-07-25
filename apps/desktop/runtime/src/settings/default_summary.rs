@@ -25,6 +25,8 @@ impl Default for SettingsSummary {
             ai_refresh: "180".to_string(),
             ai_background_refresh: "600".to_string(),
             agent_prompt_queue_enabled: true,
+            agent_prompt_queue_feature_enabled: false,
+            agent_task_relay_enabled: false,
             statistics_mode: "normalized".to_string(),
             sleep_mode: "off".to_string(),
             provider_count: 0,

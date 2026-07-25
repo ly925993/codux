@@ -160,6 +160,14 @@ impl CoduxApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let feature_enabled = match panel {
+            AssistantPanel::SendQueue => self.state.settings.agent_prompt_queue_feature_enabled,
+            AssistantPanel::TaskRelay => self.state.settings.agent_task_relay_enabled,
+            _ => true,
+        };
+        if !feature_enabled {
+            return;
+        }
         self.assistant_panel = if self.assistant_panel == Some(panel) {
             None
         } else {

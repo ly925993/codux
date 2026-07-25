@@ -33,9 +33,15 @@ pub struct AppSettings {
     pub ai_refresh: String,
     #[serde(default = "default_ai_background_refresh")]
     pub ai_background_refresh: String,
-    /// Controls whether supported Agent composer submissions use Codux's deferred queue.
+    /// Selects full-turn completion instead of the Agent's native follow-up timing.
     #[serde(default = "default_true")]
     pub agent_prompt_queue_enabled: bool,
+    /// Opt-in master switch for Codux queue interception and its workspace entry point.
+    #[serde(default)]
+    pub agent_prompt_queue_feature_enabled: bool,
+    /// Opt-in automatic dispatch of durable task relay boards to Agent terminals.
+    #[serde(default)]
+    pub agent_task_relay_enabled: bool,
     #[serde(default = "default_statistics_mode")]
     pub statistics_mode: String,
     #[serde(default = "default_file_open_default")]

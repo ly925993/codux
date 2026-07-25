@@ -47,7 +47,10 @@ impl AgentTaskRelayView {
 
 impl CoduxApp {
     pub(in crate::app) fn load_agent_task_relays(&mut self, cx: &mut Context<Self>) {
-        if self.agent_task_relay_loaded || self.agent_task_relay_loading {
+        if !self.state.settings.agent_task_relay_enabled
+            || self.agent_task_relay_loaded
+            || self.agent_task_relay_loading
+        {
             return;
         }
         self.agent_task_relay_loading = true;
@@ -122,6 +125,9 @@ impl CoduxApp {
     }
 
     pub(in crate::app) fn active_agent_task_relay_counts(&self) -> (usize, usize, bool) {
+        if !self.state.settings.agent_task_relay_enabled {
+            return (0, 0, false);
+        }
         let Some(target) = self.active_agent_task_relay_target() else {
             return (0, 0, false);
         };
@@ -326,6 +332,15 @@ impl CoduxApp {
         events: &[codux_runtime::ai_runtime::AIRuntimeSupervisorEvent],
         cx: &mut Context<Self>,
     ) {
+        if self.agent_task_relay_boards.is_empty()
+            || (!self.state.settings.agent_task_relay_enabled
+                && !self
+                    .agent_task_relay_boards
+                    .values()
+                    .any(|board| board.active_task().is_some()))
+        {
+            return;
+        }
         let mut changed_ids = HashSet::new();
         for event in events {
             match event {
@@ -474,7 +489,8 @@ impl CoduxApp {
     /// remains ahead of relay work and the durable dispatch intent is committed
     /// before the PTY side effect starts.
     pub(in crate::app) fn pump_agent_task_relays(&mut self, cx: &mut Context<Self>) {
-        if self.agent_task_relay_boards.is_empty() {
+        if !self.state.settings.agent_task_relay_enabled || self.agent_task_relay_boards.is_empty()
+        {
             return;
         }
         let board_ids = self

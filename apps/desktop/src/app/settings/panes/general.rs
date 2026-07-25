@@ -49,12 +49,33 @@ pub(super) fn settings_general_pane(
                 settings_row(
                     settings_text(
                         language,
-                        "settings.agent_prompt_queue",
-                        "Agent Message Queue",
+                        "settings.agent_prompt_queue_feature",
+                        "Enable Send Queue",
                     ),
                     Some(settings_text(
                         language,
-                        "settings.agent_prompt_queue.help",
+                        "settings.agent_prompt_queue_feature.help",
+                        "Capture supported Agent messages in Codux so they can be reordered or removed before sending.",
+                    )),
+                    settings_toggle(
+                        "settings-agent-prompt-queue-feature",
+                        settings.agent_prompt_queue_feature_enabled,
+                        cx,
+                        |app, window, cx| {
+                            app.toggle_agent_prompt_queue_feature_enabled(window, cx)
+                        },
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(
+                        language,
+                        "settings.agent_prompt_queue.defer_until_turn_complete",
+                        "Send After Turn Completion",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.agent_prompt_queue.defer_until_turn_complete.help",
                         "Queue messages while an Agent is working and send them after the current turn completes.",
                     )),
                     settings_toggle(
@@ -62,6 +83,21 @@ pub(super) fn settings_general_pane(
                         settings.agent_prompt_queue_enabled,
                         cx,
                         |app, window, cx| app.toggle_agent_prompt_queue_enabled(window, cx),
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
+                    settings_text(language, "settings.agent_task_relay", "Task Relay"),
+                    Some(settings_text(
+                        language,
+                        "settings.agent_task_relay.help",
+                        "Run queued tasks one at a time after each Agent turn completes.",
+                    )),
+                    settings_toggle(
+                        "settings-agent-task-relay",
+                        settings.agent_task_relay_enabled,
+                        cx,
+                        |app, window, cx| app.toggle_agent_task_relay_enabled(window, cx),
                     ),
                 )
                 .into_any_element(),

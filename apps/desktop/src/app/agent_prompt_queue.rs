@@ -12,6 +12,7 @@ pub(super) const MAX_AGENT_PROMPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_AGENT_QUEUE_SESSIONS: usize = 32;
 const NATIVE_SUBMISSION_GUARD: Duration = Duration::from_secs(5);
 const AGENT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+const AGENT_FOLLOW_UP_ACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AGENT_COMPOSER_SETTLE_WINDOW: Duration = Duration::from_millis(150);
 const AGENT_QUEUE_MIN_LIST_HEIGHT: f32 = 200.0;
 const AGENT_QUEUE_MAX_LIST_HEIGHT: f32 = 720.0;
@@ -60,6 +61,12 @@ pub(super) struct AgentPromptItem {
     /// An explicit retry may use an already-observed idle state because the
     /// previous write failed after the turn had completed.
     allow_current_idle: bool,
+    /// Runtime activity present when the message entered Codux's queue. Native
+    /// follow-up mode waits for a later Agent activity boundary before writing.
+    queued_activity_at: Option<u64>,
+    /// User-input fence used to prove that an Agent consumed a native follow-up.
+    dispatch_user_input_at: Option<u64>,
+    dispatched_while_responding: bool,
 }
 
 #[derive(Clone)]
@@ -144,10 +151,20 @@ impl AgentPromptQueueStore {
         self.completions.get(key).copied().map(f64::from_bits)
     }
 
+    #[cfg(test)]
     pub(super) fn enqueue(
         &mut self,
         key: AgentPromptQueueKey,
         text: String,
+    ) -> Result<u64, &'static str> {
+        self.enqueue_at(key, text, None)
+    }
+
+    pub(super) fn enqueue_at(
+        &mut self,
+        key: AgentPromptQueueKey,
+        text: String,
+        runtime_activity_at: Option<f64>,
     ) -> Result<u64, &'static str> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -182,6 +199,9 @@ impl AgentPromptQueueStore {
             dispatch_started_wall_at: None,
             completion_barrier_at: app_now_seconds().to_bits(),
             allow_current_idle: false,
+            queued_activity_at: runtime_activity_at.map(f64::to_bits),
+            dispatch_user_input_at: None,
+            dispatched_while_responding: false,
         });
         Ok(id)
     }
@@ -272,6 +292,8 @@ impl AgentPromptQueueStore {
         queue[index].dispatch_started_at = None;
         queue[index].dispatch_started_wall_at = None;
         queue[index].allow_current_idle = was_failed;
+        queue[index].dispatch_user_input_at = None;
+        queue[index].dispatched_while_responding = false;
         Ok(true)
     }
 
@@ -290,6 +312,8 @@ impl AgentPromptQueueStore {
         item.dispatch_started_at = None;
         item.dispatch_started_wall_at = None;
         item.allow_current_idle = true;
+        item.dispatch_user_input_at = None;
+        item.dispatched_while_responding = false;
         true
     }
 
@@ -301,12 +325,32 @@ impl AgentPromptQueueStore {
         self.begin_dispatch_for_runtime(key, "idle", Some(app_now_seconds() + 0.01), None)
     }
 
+    #[cfg(test)]
     pub(super) fn begin_dispatch_for_runtime(
         &mut self,
         key: &AgentPromptQueueKey,
         runtime_state: &str,
         runtime_activity_at: Option<f64>,
         terminal_completed_at: Option<f64>,
+    ) -> Option<AgentPromptDispatch> {
+        self.begin_dispatch_for_policy(
+            key,
+            runtime_state,
+            runtime_activity_at,
+            None,
+            terminal_completed_at,
+            true,
+        )
+    }
+
+    pub(super) fn begin_dispatch_for_policy(
+        &mut self,
+        key: &AgentPromptQueueKey,
+        runtime_state: &str,
+        runtime_activity_at: Option<f64>,
+        last_user_input_at: Option<f64>,
+        terminal_completed_at: Option<f64>,
+        defer_until_turn_complete: bool,
     ) -> Option<AgentPromptDispatch> {
         // A native Enter has already handed a prompt to this Agent. Keep the
         // next queued item blocked until a supervisor event confirms that the
@@ -339,13 +383,24 @@ impl AgentPromptQueueStore {
         // Agent's session file lags in responding after the turn has ended.
         let completed_after_barrier =
             terminal_completed_at.is_some_and(|completed_at| completed_at + 0.001 >= barrier);
-        if !idle_after_barrier && !(runtime_state == "responding" && completed_after_barrier) {
+        let native_follow_up_ready = runtime_state == "responding"
+            && last_user_input_at.is_some()
+            && timestamp_advanced(
+                item.queued_activity_at,
+                runtime_activity_at.map(f64::to_bits),
+            );
+        let dispatch_ready = if defer_until_turn_complete {
+            idle_after_barrier || runtime_state == "responding" && completed_after_barrier
+        } else {
+            runtime_state == "idle" || native_follow_up_ready
+        };
+        if !dispatch_ready {
             return None;
         }
         // Preserve the event that made this dispatch eligible. A recent idle
         // or completion transition needs a brief ConPTY settle window, while
         // an Agent that has already been idle incurs no additional delay.
-        let terminal_ready_at = if completed_after_barrier {
+        let terminal_ready_at = if defer_until_turn_complete && completed_after_barrier {
             terminal_completed_at
         } else if runtime_state == "idle" {
             runtime_activity_at
@@ -356,6 +411,8 @@ impl AgentPromptQueueStore {
         item.dispatch_started_at = Some(Instant::now());
         item.dispatch_started_wall_at = Some(app_now_seconds().to_bits());
         item.allow_current_idle = false;
+        item.dispatch_user_input_at = last_user_input_at.map(f64::to_bits);
+        item.dispatched_while_responding = native_follow_up_ready;
         Some(AgentPromptDispatch {
             key: key.clone(),
             item_id: item.id,
@@ -391,6 +448,8 @@ impl AgentPromptQueueStore {
                 if matches!(queue[index].status, AgentPromptStatus::Failed(_)) {
                     queue[index].dispatch_started_at = None;
                     queue[index].dispatch_started_wall_at = None;
+                    queue[index].dispatch_user_input_at = None;
+                    queue[index].dispatched_while_responding = false;
                 }
             }
             _ => return false,
@@ -402,10 +461,17 @@ impl AgentPromptQueueStore {
         let Some(item) = self.queues.get_mut(key).and_then(|queue| queue.front_mut()) else {
             return false;
         };
+        let timeout = if item.dispatched_while_responding {
+            // Native follow-ups can remain inside an Agent's own queue through
+            // a long tool call; keep delivery recoverable without false errors.
+            AGENT_FOLLOW_UP_ACK_TIMEOUT
+        } else {
+            AGENT_ACK_TIMEOUT
+        };
         if !matches!(item.status, AgentPromptStatus::AwaitingAgent)
             || !item
                 .dispatch_started_at
-                .is_some_and(|started| started.elapsed() >= AGENT_ACK_TIMEOUT)
+                .is_some_and(|started| started.elapsed() >= timeout)
         {
             return false;
         }
@@ -414,6 +480,8 @@ impl AgentPromptQueueStore {
         ));
         item.dispatch_started_at = None;
         item.dispatch_started_wall_at = None;
+        item.dispatch_user_input_at = None;
+        item.dispatched_while_responding = false;
         true
     }
 
@@ -446,15 +514,27 @@ impl AgentPromptQueueStore {
         }) else {
             return native_acknowledged;
         };
+        let dispatched_while_responding = queue[index].dispatched_while_responding;
+        if dispatched_while_responding {
+            if !timestamp_advanced(
+                queue[index].dispatch_user_input_at,
+                last_user_input_at.map(f64::to_bits),
+            ) {
+                return native_acknowledged;
+            }
+        }
         let Some(acknowledged_at) = last_user_input_at else {
             return native_acknowledged;
         };
-        let Some(dispatch_started_at) = queue[index].dispatch_started_wall_at.map(f64::from_bits)
-        else {
-            return native_acknowledged;
-        };
-        if acknowledged_at + 0.001 < dispatch_started_at {
-            return native_acknowledged;
+        if !dispatched_while_responding {
+            let Some(dispatch_started_at) =
+                queue[index].dispatch_started_wall_at.map(f64::from_bits)
+            else {
+                return native_acknowledged;
+            };
+            if acknowledged_at + 0.001 < dispatch_started_at {
+                return native_acknowledged;
+            }
         }
         if matches!(queue[index].status, AgentPromptStatus::Dispatching) {
             queue[index].status = AgentPromptStatus::DispatchingAcknowledged;
@@ -487,6 +567,11 @@ impl AgentPromptQueueStore {
         }) else {
             return false;
         };
+        // A Working title already exists while a native follow-up is queued;
+        // only a fresh session user-input timestamp can prove consumption.
+        if queue[index].dispatched_while_responding {
+            return false;
+        }
         let Some(dispatch_started_at) = queue[index].dispatch_started_wall_at.map(f64::from_bits)
         else {
             return false;
@@ -570,6 +655,14 @@ fn advance_completion_barrier(
     };
     if acknowledged_at > f64::from_bits(item.completion_barrier_at) {
         item.completion_barrier_at = acknowledged_at.to_bits();
+    }
+}
+
+fn timestamp_advanced(baseline: Option<u64>, current: Option<u64>) -> bool {
+    match (baseline, current) {
+        (Some(baseline), Some(current)) => f64::from_bits(current) > f64::from_bits(baseline),
+        (None, Some(_)) => true,
+        _ => false,
     }
 }
 
@@ -667,7 +760,7 @@ impl CoduxApp {
         submission: TerminalAgentDraftSubmission,
         cx: &mut Context<Self>,
     ) -> TerminalAgentPromptDisposition {
-        if !self.state.settings.agent_prompt_queue_enabled {
+        if !self.state.settings.agent_prompt_queue_feature_enabled {
             return TerminalAgentPromptDisposition::PassThrough;
         }
         let Some(session) = self
@@ -693,6 +786,7 @@ impl CoduxApp {
             tool: session.tool.clone(),
         };
         let runtime_state = session.runtime_state.clone();
+        let runtime_activity_at = session.runtime_activity_at;
         if let Some(provisional) = self
             .agent_prompt_queues
             .keys()
@@ -729,7 +823,10 @@ impl CoduxApp {
             self.agent_prompt_queues.note_native_submission(key);
             return TerminalAgentPromptDisposition::PassThrough;
         }
-        match self.agent_prompt_queues.enqueue(key, prompt) {
+        match self
+            .agent_prompt_queues
+            .enqueue_at(key, prompt, runtime_activity_at)
+        {
             Ok(_) => {
                 self.refresh_agent_prompt_queue_view(cx);
                 TerminalAgentPromptDisposition::Queued
@@ -953,9 +1050,10 @@ impl CoduxApp {
     /// Reconcile queue ownership against the latest supervisor state and start
     /// at most one background write per Agent session.
     pub(in crate::app) fn pump_agent_prompt_queues(&mut self, cx: &mut Context<Self>) {
-        if !self.state.settings.agent_prompt_queue_enabled {
+        if !self.state.settings.agent_prompt_queue_feature_enabled {
             return;
         }
+        let defer_until_turn_complete = self.state.settings.agent_prompt_queue_enabled;
         let mut ready = Vec::new();
         let mut queue_state_changed = false;
         let editing = self
@@ -965,7 +1063,11 @@ impl CoduxApp {
         // A single snapshot per pump bounds synchronization overhead regardless
         // of queue length. Completed is the only terminal fallback accepted as
         // a full-turn boundary; Idle alone can also represent cancelled input.
-        let terminal_statuses = self.runtime_service.ai_runtime_terminal_statuses();
+        let terminal_statuses = if defer_until_turn_complete {
+            self.runtime_service.ai_runtime_terminal_statuses()
+        } else {
+            Vec::new()
+        };
         let mut terminal_completions = HashMap::new();
         for status in terminal_statuses.iter().filter(|status| {
             status.state == codux_runtime::ai_runtime::TerminalStatusState::Completed
@@ -1073,11 +1175,13 @@ impl CoduxApp {
             .into_iter()
             .flatten()
             .max_by(f64::total_cmp);
-            if let Some(dispatch) = self.agent_prompt_queues.begin_dispatch_for_runtime(
+            if let Some(dispatch) = self.agent_prompt_queues.begin_dispatch_for_policy(
                 &key,
                 &runtime_state,
                 runtime_activity_at,
+                last_user_input_at,
                 completed_at,
+                defer_until_turn_complete,
             ) {
                 ready.push((dispatch, pane));
             } else {
@@ -1130,6 +1234,9 @@ impl CoduxApp {
         &mut self,
         events: &[codux_runtime::ai_runtime::AIRuntimeSupervisorEvent],
     ) {
+        if !self.state.settings.agent_prompt_queue_feature_enabled {
+            return;
+        }
         // SessionCompletion is emitted by native hooks, including the Windows
         // PowerShell bridge. Record it before the coalesced session summary is
         // rebuilt so queue release does not depend on filesystem polling lag.
@@ -1762,6 +1869,36 @@ mod tests {
                 .begin_dispatch_for_runtime(&key(), "responding", None, Some(stale_completion_at))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn native_follow_up_policy_uses_agent_activity_and_user_input_fences() {
+        let mut store = AgentPromptQueueStore::default();
+        store
+            .enqueue_at(key(), "follow up".to_string(), Some(10.0))
+            .unwrap();
+
+        assert!(
+            store
+                .begin_dispatch_for_policy(
+                    &key(),
+                    "responding",
+                    Some(10.0),
+                    Some(5.0),
+                    None,
+                    false,
+                )
+                .is_none()
+        );
+        let dispatch = store
+            .begin_dispatch_for_policy(&key(), "responding", Some(11.0), Some(5.0), None, false)
+            .unwrap();
+        assert_eq!(dispatch.terminal_ready_at, None);
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+        assert!(!store.acknowledge_agent_started_from_terminal_status(&key(), 12.0));
+        assert!(!store.acknowledge_agent_started_at(&key(), Some(5.0)));
+        assert!(store.acknowledge_agent_started_at(&key(), Some(6.0)));
+        assert!(store.items(&key()).is_empty());
     }
 
     #[test]

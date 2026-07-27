@@ -1,6 +1,6 @@
 [package]
 name = "codux-runtime"
-version = "2.0.3"
+version = "2.0.4-custom.2"
 edition = "2024"
 
 [dependencies]

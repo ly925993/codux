@@ -49,6 +49,7 @@ const result = spawnSync(
       RELEASE_TAG: "v1.5.0",
       RELEASE_ARTIFACTS_DIR: artifactsDir,
       RELEASE_NOTES_PATH: notesPath,
+      RELEASE_ASSET_BASE_URL: "http://updates.example.invalid/codux/releases/1.5.0/",
     },
   },
 );
@@ -75,6 +76,10 @@ for (const key of ["darwin-aarch64", "darwin-aarch64-app"]) {
   assertEqual(manifest.platforms[key].signature, "mac-arm-signature");
   assert(manifest.platforms[key].url.endsWith("/codux-macos-aarch64-updater.app.tar.gz"), `${key} should use stable aarch64 updater name`);
   assert(manifest.platforms[key].url.endsWith(".app.tar.gz"), `${key} should use app.tar.gz`);
+  assert(
+    manifest.platforms[key].url.startsWith("http://updates.example.invalid/codux/releases/1.5.0/"),
+    `${key} should use the configured internal asset base URL`,
+  );
 }
 
 for (const key of ["darwin-x86_64", "darwin-x86_64-app"]) {

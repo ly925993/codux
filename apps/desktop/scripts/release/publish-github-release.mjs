@@ -11,6 +11,7 @@ const version = requiredEnv("RELEASE_VERSION");
 const channel = requiredEnv("RELEASE_CHANNEL");
 const tagName = process.env.RELEASE_TAG || `v${version}`;
 const repo = process.env.GITHUB_REPOSITORY || "duxweb/codux";
+const releaseAssetBaseUrl = process.env.RELEASE_ASSET_BASE_URL?.trim().replace(/\/+$/, "") || "";
 const notesPath = process.env.RELEASE_NOTES_PATH || path.join(root, "dist", `release-notes-${version}.md`);
 const artifactsDir = process.env.RELEASE_ARTIFACTS_DIR || path.join(root, "release-artifacts");
 const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf8") : `Codux ${version}`;
@@ -223,6 +224,11 @@ function publicUpdaterAssetName(bundleAsset, byName) {
 }
 
 function releaseAssetUrl(assetName) {
+  // Internal releases reuse the tested manifest builder while keeping GitHub
+  // as the default destination for upstream-compatible public publishing.
+  if (releaseAssetBaseUrl) {
+    return `${releaseAssetBaseUrl}/${encodeURIComponent(assetName)}`;
+  }
   return `https://github.com/${repo}/releases/download/${encodeURIComponent(tagName)}/${encodeURIComponent(assetName)}`;
 }
 

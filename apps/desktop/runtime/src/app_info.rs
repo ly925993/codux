@@ -4,8 +4,8 @@ use crate::runtime_paths::{
 };
 use crate::runtime_trace::rotated_log_paths;
 use crate::settings::AppSettings;
-use crate::update::UpdateService;
 pub use crate::update::UpdateStatus;
+use crate::update::{UpdateService, update_http_client};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
 use minisign_verify::{PublicKey, Signature};
@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use url::Url;
 
-const TAURI_UPDATER_PUBLIC_KEY: &str = "RWTIDGGsK4geAihw4QK08H+tw5BUDYrQDww6GRCVQKWtH6RvOVe/huaA";
+// Only packages signed by the custom updater private key may be installed.
+// The private key is kept outside the repository and never reaches clients.
+const TAURI_UPDATER_PUBLIC_KEY: &str = "RWSoIhu4PL8+6tmYFrHtTOeV1ksWfUcgZ3MHJ28zlTbL5cAzAXui9jdX";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppAboutMetadata {
@@ -434,10 +436,9 @@ fn download_update(
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let result = crate::async_runtime::block_on(async {
-        let mut response = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .build()
-            .map_err(|error| error.to_string())?
+        // The shared builder bypasses stale system proxies for private LAN
+        // release hosts while preserving normal proxy behavior for public URLs.
+        let mut response = update_http_client(url, std::time::Duration::from_secs(600))?
             .get(url)
             .send()
             .await
@@ -520,7 +521,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn verify_download_signature(path: &Path, signature: Option<&str>) -> Result<(), String> {
     let Some(signature) = signature.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(());
+        return Err("Downloaded update is missing its required signature".to_string());
     };
     let public_key = PublicKey::from_base64(TAURI_UPDATER_PUBLIC_KEY)
         .map_err(|error| format!("Invalid updater public key: {error}"))?;
@@ -1070,15 +1071,15 @@ mod tests {
     }
 
     #[test]
-    fn update_signature_verification_skips_empty_signature() {
+    fn update_signature_verification_rejects_empty_signature() {
         let path = std::env::temp_dir().join(format!(
             "codux-update-signature-test-{}",
             uuid::Uuid::new_v4()
         ));
         fs::write(&path, b"payload").unwrap();
 
-        assert!(verify_download_signature(&path, None).is_ok());
-        assert!(verify_download_signature(&path, Some("")).is_ok());
+        assert!(verify_download_signature(&path, None).is_err());
+        assert!(verify_download_signature(&path, Some("")).is_err());
 
         let _ = fs::remove_file(path);
     }

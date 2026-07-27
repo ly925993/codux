@@ -181,7 +181,10 @@ pub(super) fn release_channel_for_version(version: &str) -> &'static str {
         Some((_, prerelease))
             if prerelease != "rc"
                 && !prerelease.starts_with("rc.")
-                && !prerelease.starts_with("rc-") =>
+                && !prerelease.starts_with("rc-")
+                && prerelease != "custom"
+                && !prerelease.starts_with("custom.")
+                && !prerelease.starts_with("custom-") =>
         {
             "beta"
         }
@@ -190,9 +193,11 @@ pub(super) fn release_channel_for_version(version: &str) -> &'static str {
 }
 
 pub(crate) fn update_endpoint_for_channel(channel: &str) -> String {
+    // Custom builds stay on the internal package host so update checks never
+    // depend on GitHub availability from the corporate network.
     match channel {
-        "beta" => "https://raw.githubusercontent.com/duxweb/codux/main/updates/beta/latest.json",
-        _ => "https://raw.githubusercontent.com/duxweb/codux/main/updates/stable/latest.json",
+        "beta" => "http://updates.example.invalid/codux/beta/latest.json",
+        _ => "http://updates.example.invalid/codux/stable/latest.json",
     }
     .to_string()
 }
@@ -204,6 +209,8 @@ pub(super) fn is_managed_update_endpoint(endpoint: &str) -> bool {
             | "https://github.com/duxweb/codux/releases/download/beta/latest.json"
             | "https://raw.githubusercontent.com/duxweb/codux/main/updates/stable/latest.json"
             | "https://raw.githubusercontent.com/duxweb/codux/main/updates/beta/latest.json"
+            | "http://updates.example.invalid/codux/stable/latest.json"
+            | "http://updates.example.invalid/codux/beta/latest.json"
     )
 }
 
@@ -218,5 +225,6 @@ mod tests {
         assert_eq!(release_channel_for_version("2.0.0-rc"), "stable");
         assert_eq!(release_channel_for_version("2.0.0-beta.11"), "beta");
         assert_eq!(release_channel_for_version("2.0.0-alpha.1"), "beta");
+        assert_eq!(release_channel_for_version("2.0.4-custom.1"), "stable");
     }
 }

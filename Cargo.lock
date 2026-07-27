@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "codux"
-version = "2.0.3"
+version = "2.0.4-custom.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "codux-agent"
-version = "2.0.3"
+version = "2.0.4-custom.2"
 dependencies = [
  "base64",
  "chrono",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "codux-runtime"
-version = "2.0.3"
+version = "2.0.4-custom.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "codux-wrapper-helper"
-version = "2.0.3"
+version = "2.0.4-custom.2"
 dependencies = [
  "codux-runtime-live",
 ]

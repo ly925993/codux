@@ -312,14 +312,12 @@ impl CoduxApp {
             let _ = this.update(cx, |app, cx| {
                 match status_result {
                     Ok(status) => {
+                        let phase = update_dialog_phase_for_status(&status);
+                        if phase == UpdateDialogPhase::Error {
+                            app.update_dialog_error = Some(status.message.clone());
+                        }
                         app.update_dialog_status = Some(status.clone());
-                        app.update_dialog_phase = if !status.configured {
-                            UpdateDialogPhase::NotConfigured
-                        } else if status.available {
-                            UpdateDialogPhase::Available
-                        } else {
-                            UpdateDialogPhase::Latest
-                        };
+                        app.update_dialog_phase = phase;
                         app.status_message = status.message;
                     }
                     Err(error) => {
@@ -566,6 +564,22 @@ impl CoduxApp {
             });
         })
         .detach();
+    }
+}
+
+fn update_dialog_phase_for_status(
+    status: &codux_runtime::update::UpdateStatus,
+) -> UpdateDialogPhase {
+    if !status.configured {
+        UpdateDialogPhase::NotConfigured
+    } else if status.latest_version.is_none() {
+        // A configured channel without a parsed remote version represents a
+        // failed check, never evidence that the installed build is current.
+        UpdateDialogPhase::Error
+    } else if status.available {
+        UpdateDialogPhase::Available
+    } else {
+        UpdateDialogPhase::Latest
     }
 }
 
@@ -1114,4 +1128,47 @@ fn timestamp_slug() -> String {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     seconds.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codux_runtime::update::UpdateStatus;
+
+    fn update_status(
+        configured: bool,
+        latest_version: Option<&str>,
+        available: bool,
+    ) -> UpdateStatus {
+        UpdateStatus {
+            configured,
+            latest_version: latest_version.map(str::to_string),
+            available,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn update_dialog_does_not_report_latest_when_check_has_no_remote_version() {
+        assert_eq!(
+            update_dialog_phase_for_status(&update_status(true, None, false)),
+            UpdateDialogPhase::Error
+        );
+    }
+
+    #[test]
+    fn update_dialog_distinguishes_unconfigured_available_and_latest_states() {
+        assert_eq!(
+            update_dialog_phase_for_status(&update_status(false, None, false)),
+            UpdateDialogPhase::NotConfigured
+        );
+        assert_eq!(
+            update_dialog_phase_for_status(&update_status(true, Some("2.0.4"), true)),
+            UpdateDialogPhase::Available
+        );
+        assert_eq!(
+            update_dialog_phase_for_status(&update_status(true, Some("2.0.4"), false)),
+            UpdateDialogPhase::Latest
+        );
+    }
 }

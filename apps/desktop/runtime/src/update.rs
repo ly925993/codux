@@ -1,11 +1,9 @@
-use crate::{
-    config::ConfigStore,
-    settings::{AppSettings, UpdateSettings as AppUpdateSettings},
-};
+use crate::settings::{AppSettings, AppSettingsStore, UpdateSettings as AppUpdateSettings};
 use semver::Version;
 use serde::Serialize;
 use serde_json::Value;
 use std::{fs, path::PathBuf, time::Duration};
+use url::{Host, Url};
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,9 +179,11 @@ impl UpdateService {
     }
 
     fn settings(&self) -> AppUpdateSettings {
-        ConfigStore::for_file(self.settings_path.clone())
-            .get_as::<AppUpdateSettings>("update")
-            .unwrap_or_default()
+        // Update checks must consume the same sanitized settings as the rest
+        // of the app so managed endpoint migrations apply before any request.
+        AppSettingsStore::from_settings_file(self.settings_path.clone())
+            .snapshot()
+            .update
     }
 
     fn load_latest_manifest(&self, settings: &UpdateSummary) -> Result<Value, String> {
@@ -207,10 +207,7 @@ fn read_json_file(path: PathBuf) -> Result<Value, String> {
 
 fn fetch_json(endpoint: &str) -> Result<Value, String> {
     crate::async_runtime::block_on(async move {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|error| error.to_string())?
+        update_http_client(endpoint, Duration::from_secs(10))?
             .get(endpoint)
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
@@ -221,6 +218,37 @@ fn fetch_json(endpoint: &str) -> Result<Value, String> {
             .await
             .map_err(|error| error.to_string())
     })
+}
+
+/// Builds update clients with deterministic access to LAN-hosted releases.
+/// Public endpoints retain the operating system proxy configuration.
+pub(crate) fn update_http_client(
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if update_endpoint_bypasses_proxy(endpoint) {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|error| error.to_string())
+}
+
+fn update_endpoint_bypasses_proxy(endpoint: &str) -> bool {
+    let Ok(url) = Url::parse(endpoint) else {
+        return false;
+    };
+    // Match the parsed host directly so bracketed IPv6 literals are handled
+    // consistently on macOS and Windows.
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => {
+            address.is_private() || address.is_loopback() || address.is_link_local()
+        }
+        Some(Host::Ipv6(address)) => {
+            address.is_unique_local() || address.is_loopback() || address.is_unicast_link_local()
+        }
+        None => false,
+    }
 }
 
 fn manifest_release_version(manifest: &Value) -> Result<String, String> {
@@ -443,6 +471,56 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_update_endpoints_bypass_system_proxy() {
+        assert!(update_endpoint_bypasses_proxy(
+            "http://updates.example.invalid/codux/stable/latest.json"
+        ));
+        assert!(update_endpoint_bypasses_proxy(
+            "http://127.0.0.1:8080/latest.json"
+        ));
+        assert!(update_endpoint_bypasses_proxy(
+            "http://[fd00::71]/latest.json"
+        ));
+    }
+
+    #[test]
+    fn public_and_invalid_update_endpoints_keep_default_proxy_behavior() {
+        assert!(!update_endpoint_bypasses_proxy(
+            "https://github.com/duxweb/codux/releases/latest/download/latest.json"
+        ));
+        assert!(!update_endpoint_bypasses_proxy("not a url"));
+    }
+
+    #[test]
+    fn update_service_applies_managed_endpoint_migration_before_checking() {
+        let support_dir = std::env::temp_dir().join(format!(
+            "codux-runtime-update-migration-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&support_dir).unwrap();
+        fs::write(
+            support_dir.join("settings.json"),
+            serde_json::json!({
+                "update": {
+                    "enabled": true,
+                    "channel": "stable",
+                    "endpoint": "https://raw.githubusercontent.com/duxweb/codux/main/updates/stable/latest.json"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let settings = UpdateService::new(support_dir.clone(), PathBuf::new()).settings();
+
+        assert_eq!(
+            settings.endpoint,
+            "http://updates.example.invalid/codux/stable/latest.json"
+        );
+        let _ = fs::remove_dir_all(support_dir);
+    }
 
     #[test]
     fn status_from_settings_reports_disabled_update_checks() {

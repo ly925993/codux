@@ -48,6 +48,15 @@ impl TerminalAgentDraft {
             }
             return;
         }
+        if matches!(key.as_str(), "escape" | "esc") && bytes == [0x1b] {
+            // Esc stops an active Agent turn but does not alter an empty
+            // composer. Preserve that known-empty state so the send queue can
+            // dispatch after the runtime publishes the interruption boundary.
+            // A non-empty composer remains conservative because Agent TUIs do
+            // not agree on whether Esc preserves or rewrites draft contents.
+            self.reliable = self.reliable && self.text.is_empty();
+            return;
+        }
         if matches!(key.as_str(), "enter" | "return" | "kp_enter")
             && modifiers.shift
             && !modifiers.control

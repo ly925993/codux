@@ -76,6 +76,42 @@ fn agent_draft_marks_unmodeled_control_shortcuts_unreliable() {
 }
 
 #[test]
+fn empty_agent_draft_stays_dispatchable_after_escape_interrupt() {
+    let mut draft = TerminalAgentDraft::new();
+
+    // Esc interrupts an active Agent turn without changing an empty composer.
+    // The queued-message scheduler must still be able to use that composer.
+    draft.record_keystroke(&keystroke("escape"), b"\x1b");
+
+    assert!(draft.is_empty_and_reliable());
+}
+
+#[test]
+fn nonempty_agent_draft_remains_conservative_after_escape() {
+    let mut draft = TerminalAgentDraft::new();
+    draft.record_text("unsent local text");
+
+    // Agent TUIs differ on whether Esc preserves or rewrites a non-empty
+    // composer, so automatic dispatch must remain blocked in this case.
+    draft.record_keystroke(&keystroke("escape"), b"\x1b");
+
+    assert!(!draft.is_empty_and_reliable());
+    assert!(draft.submission().is_none());
+}
+
+#[test]
+fn escape_does_not_restore_an_already_unreliable_empty_draft() {
+    let mut draft = TerminalAgentDraft::new();
+
+    // History navigation may populate the real Agent composer without a text
+    // event. Esc must not claim that unknown composer is empty afterward.
+    draft.record_keystroke(&keystroke("up"), b"\x1b[A");
+    draft.record_keystroke(&keystroke("escape"), b"\x1b");
+
+    assert!(!draft.is_empty_and_reliable());
+}
+
+#[test]
 fn agent_draft_bounds_large_pastes_without_truncating_a_queued_prompt() {
     let mut draft = TerminalAgentDraft::new();
     draft.record_text(&"x".repeat(MAX_TERMINAL_AGENT_DRAFT_BYTES + 1));

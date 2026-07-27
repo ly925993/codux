@@ -1877,6 +1877,17 @@ mod tests {
         }
     }
 
+    fn interrupted_completion(
+        terminal_instance_id: &str,
+        ai_session_id: &str,
+        completed_at: f64,
+    ) -> codux_runtime::ai_runtime::AIRuntimeSessionCompletionEvent {
+        let mut completion = completion(terminal_instance_id, ai_session_id, completed_at);
+        completion.has_completed_turn = false;
+        completion.was_interrupted = true;
+        completion
+    }
+
     #[test]
     fn send_queue_auto_opens_only_for_the_first_item_when_no_tool_is_open() {
         assert!(should_auto_open_send_queue(true, None, false));
@@ -2030,6 +2041,96 @@ mod tests {
         assert!(
             store
                 .begin_dispatch_for_runtime(&key(), "responding", None, stale_completion_at,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fresh_interrupt_releases_only_one_queued_message() {
+        let mut store = AgentPromptQueueStore::default();
+        store.enqueue(key(), "first".to_string()).unwrap();
+        store.enqueue(key(), "second".to_string()).unwrap();
+        let barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
+        let interruption = interrupted_completion("instance-1", "session-1", barrier + 1.0);
+
+        assert!(completion_matches_queue_key(&interruption, &key()));
+        assert!(store.note_completion(&key(), interruption.completed_at));
+        // Keep the runtime in responding here to exercise the portable
+        // completion fallback used while hook/transcript snapshots catch up.
+        let dispatch = store
+            .begin_dispatch_for_runtime(
+                &key(),
+                "responding",
+                None,
+                store.latest_completion_at(&key()),
+            )
+            .unwrap();
+        assert_eq!(dispatch.text.as_ref(), "first");
+        assert!(store.finish_write(&key(), dispatch.item_id, None));
+        assert!(store.acknowledge_agent_started_from_terminal_status(
+            &key(),
+            interruption.completed_at + 1.0,
+        ));
+
+        // Replaying the same interruption is idempotent and cannot release
+        // the second item without a later Agent completion boundary.
+        assert!(!store.note_completion(&key(), interruption.completed_at));
+        assert!(
+            store
+                .begin_dispatch_for_runtime(
+                    &key(),
+                    "responding",
+                    None,
+                    store.latest_completion_at(&key()),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stale_or_foreign_interrupt_cannot_release_a_queued_message() {
+        let mut store = AgentPromptQueueStore::default();
+        store.enqueue(key(), "protected".to_string()).unwrap();
+        let barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
+        let stale = interrupted_completion("instance-1", "session-1", barrier - 1.0);
+        let other_terminal = interrupted_completion("instance-2", "session-1", barrier + 1.0);
+        let other_session = interrupted_completion("instance-1", "session-2", barrier + 1.0);
+
+        assert!(completion_matches_queue_key(&stale, &key()));
+        assert!(!completion_matches_queue_key(&other_terminal, &key()));
+        assert!(!completion_matches_queue_key(&other_session, &key()));
+        assert!(store.note_completion(&key(), stale.completed_at));
+        assert!(
+            store
+                .begin_dispatch_for_runtime(
+                    &key(),
+                    "responding",
+                    None,
+                    store.latest_completion_at(&key()),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn needs_input_never_dispatches_even_after_an_interrupt_boundary() {
+        let mut store = AgentPromptQueueStore::default();
+        store
+            .enqueue(key(), "wait for approval".to_string())
+            .unwrap();
+        let barrier = f64::from_bits(store.queues[&key()][0].completion_barrier_at);
+        assert!(store.note_completion(&key(), barrier + 1.0));
+
+        assert!(
+            store
+                .begin_dispatch_for_policy(
+                    &key(),
+                    "needsInput",
+                    Some(barrier + 1.0),
+                    None,
+                    store.latest_completion_at(&key()),
+                    true,
+                )
                 .is_none()
         );
     }

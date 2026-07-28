@@ -178,6 +178,11 @@ pub(super) fn default_update_channel() -> &'static str {
     release_channel_for_version(env!("CARGO_PKG_VERSION"))
 }
 
+const DEFAULT_STABLE_UPDATE_ENDPOINT: &str =
+    "https://github.com/duxweb/codux/releases/latest/download/latest.json";
+const DEFAULT_BETA_UPDATE_ENDPOINT: &str =
+    "https://github.com/duxweb/codux/releases/download/beta/latest.json";
+
 // Mirrors automaticReleaseChannel in prepare-release.mjs: rc prereleases
 // publish to the stable channel, other prereleases to beta.
 pub(super) fn release_channel_for_version(version: &str) -> &'static str {
@@ -197,25 +202,30 @@ pub(super) fn release_channel_for_version(version: &str) -> &'static str {
 }
 
 pub(crate) fn update_endpoint_for_channel(channel: &str) -> String {
-    // Custom builds stay on the internal package host so update checks never
-    // depend on GitHub availability from the corporate network.
-    match channel {
-        "beta" => "http://updates.example.invalid/codux/beta/latest.json",
-        _ => "http://updates.example.invalid/codux/stable/latest.json",
-    }
-    .to_string()
+    // Private distributions inject their endpoints at build time so deployment
+    // topology never needs to be committed to the public source tree.
+    let configured = match channel {
+        "beta" => option_env!("CODUX_BETA_UPDATE_ENDPOINT"),
+        _ => option_env!("CODUX_STABLE_UPDATE_ENDPOINT"),
+    };
+    configured
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .unwrap_or(match channel {
+            "beta" => DEFAULT_BETA_UPDATE_ENDPOINT,
+            _ => DEFAULT_STABLE_UPDATE_ENDPOINT,
+        })
+        .to_string()
 }
 
-pub(super) fn is_managed_update_endpoint(endpoint: &str) -> bool {
-    matches!(
-        endpoint,
-        "https://github.com/duxweb/codux/releases/latest/download/latest.json"
-            | "https://github.com/duxweb/codux/releases/download/beta/latest.json"
-            | "https://raw.githubusercontent.com/duxweb/codux/main/updates/stable/latest.json"
-            | "https://raw.githubusercontent.com/duxweb/codux/main/updates/beta/latest.json"
-            | "http://updates.example.invalid/codux/stable/latest.json"
-            | "http://updates.example.invalid/codux/beta/latest.json"
-    )
+pub(crate) fn is_managed_update_endpoint(endpoint: &str) -> bool {
+    endpoint == update_endpoint_for_channel("stable")
+        || endpoint == update_endpoint_for_channel("beta")
+        || matches!(
+            endpoint,
+            "https://raw.githubusercontent.com/duxweb/codux/main/updates/stable/latest.json"
+                | "https://raw.githubusercontent.com/duxweb/codux/main/updates/beta/latest.json"
+        )
 }
 
 #[cfg(test)]

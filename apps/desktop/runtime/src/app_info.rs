@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use url::Url;
 
-// Only packages signed by the custom updater private key may be installed.
-// The private key is kept outside the repository and never reaches clients.
+// Only packages signed by the configured updater key may be installed. The
+// corresponding private key stays outside the repository and client builds.
 const TAURI_UPDATER_PUBLIC_KEY: &str = "RWSoIhu4PL8+6tmYFrHtTOeV1ksWfUcgZ3MHJ28zlTbL5cAzAXui9jdX";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

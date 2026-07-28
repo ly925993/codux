@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn private_update_endpoints_bypass_system_proxy() {
         assert!(update_endpoint_bypasses_proxy(
-            "http://updates.example.invalid/codux/stable/latest.json"
+            "http://10.0.0.1/latest.json"
         ));
         assert!(update_endpoint_bypasses_proxy(
             "http://127.0.0.1:8080/latest.json"
@@ -517,7 +517,7 @@ mod tests {
 
         assert_eq!(
             settings.endpoint,
-            "http://updates.example.invalid/codux/stable/latest.json"
+            crate::settings::app_settings::update_endpoint_for_channel("stable")
         );
         let _ = fs::remove_dir_all(support_dir);
     }

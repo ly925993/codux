@@ -756,9 +756,8 @@ mod tests {
         assert_eq!(summary.update_channel, "beta");
         crate::config::flush_all_config_writes();
         let updated = fs::read_to_string(support_dir.join("settings.json")).expect("updated");
-        assert!(updated.contains(
-            "\"endpoint\": \"http://updates.example.invalid/codux/beta/latest.json\""
-        ));
+        let beta_endpoint = crate::settings::app_settings::update_endpoint_for_channel("beta");
+        assert!(updated.contains(&format!("\"endpoint\": \"{beta_endpoint}\"")));
 
         let summary = service
             .set_update_channel("stable")
@@ -766,9 +765,8 @@ mod tests {
         assert_eq!(summary.update_channel, "stable");
         crate::config::flush_all_config_writes();
         let updated = fs::read_to_string(support_dir.join("settings.json")).expect("updated");
-        assert!(updated.contains(
-            "\"endpoint\": \"http://updates.example.invalid/codux/stable/latest.json\""
-        ));
+        let stable_endpoint = crate::settings::app_settings::update_endpoint_for_channel("stable");
+        assert!(updated.contains(&format!("\"endpoint\": \"{stable_endpoint}\"")));
 
         fs::remove_dir_all(support_dir).ok();
     }
@@ -797,9 +795,8 @@ mod tests {
         assert_eq!(summary.update_channel, "beta");
         crate::config::flush_all_config_writes();
         let updated = fs::read_to_string(support_dir.join("settings.json")).expect("updated");
-        assert!(updated.contains(
-            "\"endpoint\": \"http://updates.example.invalid/codux/beta/latest.json\""
-        ));
+        let beta_endpoint = crate::settings::app_settings::update_endpoint_for_channel("beta");
+        assert!(updated.contains(&format!("\"endpoint\": \"{beta_endpoint}\"")));
 
         fs::remove_dir_all(support_dir).ok();
     }

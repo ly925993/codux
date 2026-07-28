@@ -41,6 +41,8 @@ pub(super) fn sanitize_settings(mut settings: AppSettings) -> AppSettings {
     }
     settings.terminal_scrollback_lines =
         sanitize_terminal_scrollback_lines(&settings.terminal_scrollback_lines);
+    settings.terminal_layout_mode =
+        crate::settings::sanitize_terminal_layout_mode(&settings.terminal_layout_mode);
     if settings.icon_style.trim().is_empty() {
         settings.icon_style = default_icon_style();
     }

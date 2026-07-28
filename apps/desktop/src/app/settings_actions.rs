@@ -1,6 +1,30 @@
 use super::*;
 
 impl CoduxApp {
+    pub(super) fn set_terminal_layout_mode(
+        &mut self,
+        mode: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.settings.terminal_layout_mode == mode {
+            return;
+        }
+        self.save_settings_async(
+            "set_terminal_layout_mode",
+            "saving terminal layout mode",
+            move |service| service.set_terminal_layout_mode(&mode),
+            |app, settings, cx| {
+                app.apply_async_settings_summary(settings);
+                // The workspace view updates visibility in place; PTYs remain mounted.
+                app.invalidate_terminal_workspace(cx);
+                app.invalidate_ui_region(cx, UiRegion::Root);
+            },
+            cx,
+        );
+        self.invalidate_ui_region(cx, UiRegion::Root);
+    }
+
     pub(super) fn set_terminal_font_family(
         &mut self,
         family: String,

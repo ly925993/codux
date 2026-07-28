@@ -15,6 +15,8 @@ pub struct SettingsSummary {
     /// Terminal line-height multiplier (1.0-2.0).
     pub terminal_line_height: String,
     pub terminal_scrollback_lines: String,
+    /// Controls whether terminal panes are rendered as splits or one active tab.
+    pub terminal_layout_mode: String,
     /// Copies a completed mouse selection once, after the selection event finishes.
     pub terminal_copy_on_select: bool,
     /// Uses an unmodified right click for paste while Shift+right-click keeps the menu available.

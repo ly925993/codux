@@ -337,6 +337,22 @@ pub(super) fn terminal_scrollback_options(language: &str) -> Vec<(String, Shared
         .collect()
 }
 
+pub(super) fn terminal_layout_mode_options(language: &str) -> Vec<(String, SharedString)> {
+    vec![
+        (
+            "split",
+            settings_text(language, "settings.terminal_layout_mode.split", "Split"),
+        ),
+        (
+            "tabs",
+            settings_text(language, "settings.terminal_layout_mode.tabs", "Tabs"),
+        ),
+    ]
+    .into_iter()
+    .map(|(value, label)| (value.to_string(), SharedString::from(label)))
+    .collect()
+}
+
 pub(super) fn terminal_font_family_options(
     language: &str,
     selected: &str,

@@ -56,6 +56,9 @@ pub struct AppSettings {
     pub terminal_font_size: String,
     #[serde(default = "default_terminal_scrollback_lines")]
     pub terminal_scrollback_lines: String,
+    /// Controls whether terminal panes share the workspace or use one active tab.
+    #[serde(default = "default_terminal_layout_mode")]
+    pub terminal_layout_mode: String,
     /// Opt-in because automatic copying replaces the user's current clipboard contents.
     #[serde(default)]
     pub terminal_copy_on_select: bool,

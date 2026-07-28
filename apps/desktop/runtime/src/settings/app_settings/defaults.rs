@@ -150,6 +150,10 @@ pub(super) fn default_terminal_scrollback_lines() -> String {
     "2000".to_string()
 }
 
+pub(super) fn default_terminal_layout_mode() -> String {
+    "split".to_string()
+}
+
 pub(super) fn default_terminal_paste_images_as_paths() -> bool {
     true
 }

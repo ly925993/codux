@@ -4,6 +4,8 @@ use super::*;
 pub(in crate::app) struct TerminalWorkspaceSnapshot {
     pub(super) loading: bool,
     pub(super) language: String,
+    pub(super) layout_mode: String,
+    pub(super) active_terminal_id: String,
     pub(super) layout_key: String,
     pub(super) top_ratios: Vec<f64>,
     pub(super) top_grid: TerminalTopGrid,
@@ -12,9 +14,21 @@ pub(in crate::app) struct TerminalWorkspaceSnapshot {
 }
 
 impl TerminalWorkspaceSnapshot {
+    fn active_pane_index(&self) -> usize {
+        terminal_active_pane_index(&self.main_panes, &self.active_terminal_id)
+    }
+
     fn visible_terminal_views(&self) -> Vec<gpui::Entity<TerminalView>> {
-        self.main_panes
-            .iter()
+        let panes = if self.layout_mode == "tabs" {
+            self.main_panes
+                .get(self.active_pane_index())
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            self.main_panes.iter().collect::<Vec<_>>()
+        };
+        panes
+            .into_iter()
             .filter_map(|pane| pane.view.clone())
             .collect()
     }
@@ -29,16 +43,33 @@ impl TerminalWorkspaceSnapshot {
     }
 }
 
+pub(super) fn terminal_active_pane_index(
+    panes: &[TerminalPaneViewSnapshot],
+    active_terminal_id: &str,
+) -> usize {
+    panes
+        .iter()
+        .position(|pane| {
+            !active_terminal_id.is_empty()
+                && pane.terminal_id.as_deref() == Some(active_terminal_id)
+        })
+        .unwrap_or(0)
+}
+
 #[derive(Clone)]
 pub(super) struct TerminalPaneViewSnapshot {
     pub(super) terminal_id: Option<String>,
+    pub(super) title: String,
     pub(super) view: Option<gpui::Entity<TerminalView>>,
     pub(super) search_open: bool,
 }
 
 impl PartialEq for TerminalPaneViewSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        if self.terminal_id != other.terminal_id || self.search_open != other.search_open {
+        if self.terminal_id != other.terminal_id
+            || self.title != other.title
+            || self.search_open != other.search_open
+        {
             return false;
         }
         match (&self.view, &other.view) {
@@ -66,7 +97,10 @@ impl TerminalWorkspaceView {
     pub(super) fn new(
         app_entity: gpui::Entity<CoduxApp>,
         snapshot: TerminalWorkspaceSnapshot,
+        cx: &mut Context<Self>,
     ) -> Self {
+        // Only the active tab should request terminal frames in tab mode.
+        snapshot.set_terminal_views_visible(true, cx);
         Self {
             app_entity,
             snapshot,
@@ -86,6 +120,12 @@ impl TerminalWorkspaceView {
         if self.snapshot == snapshot {
             return;
         }
+        let previous_visible = self
+            .snapshot
+            .visible_terminal_views()
+            .into_iter()
+            .map(|view| view.entity_id())
+            .collect::<std::collections::HashSet<_>>();
         let next_visible = snapshot
             .visible_terminal_views()
             .into_iter()
@@ -94,6 +134,11 @@ impl TerminalWorkspaceView {
         for view in self.snapshot.visible_terminal_views() {
             if !next_visible.contains(&view.entity_id()) {
                 view.update(cx, |view, cx| view.set_render_visible(false, cx));
+            }
+        }
+        for view in snapshot.visible_terminal_views() {
+            if !previous_visible.contains(&view.entity_id()) {
+                view.update(cx, |view, cx| view.set_render_visible(true, cx));
             }
         }
         if self
@@ -160,6 +205,8 @@ impl Render for TerminalWorkspaceView {
             TerminalMainSplitInput {
                 app_entity: self.app_entity.clone(),
                 language: &self.snapshot.language,
+                layout_mode: &self.snapshot.layout_mode,
+                active_terminal_id: &self.snapshot.active_terminal_id,
                 panes: &self.snapshot.main_panes,
                 layout_key: &self.snapshot.layout_key,
                 top_ratios: &self.snapshot.top_ratios,
@@ -213,5 +260,27 @@ impl Render for TerminalWorkspaceView {
                     .overflow_hidden()
                     .child(main),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane(id: &str) -> TerminalPaneViewSnapshot {
+        TerminalPaneViewSnapshot {
+            terminal_id: Some(id.to_string()),
+            title: id.to_string(),
+            view: None,
+            search_open: false,
+        }
+    }
+
+    #[test]
+    fn active_terminal_tab_uses_runtime_id_and_falls_back_to_first() {
+        let panes = vec![pane("terminal-a"), pane("terminal-b"), pane("terminal-c")];
+        assert_eq!(terminal_active_pane_index(&panes, "terminal-b"), 1);
+        assert_eq!(terminal_active_pane_index(&panes, "missing"), 0);
+        assert_eq!(terminal_active_pane_index(&panes, ""), 0);
     }
 }

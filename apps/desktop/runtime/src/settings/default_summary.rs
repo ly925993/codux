@@ -13,6 +13,7 @@ impl Default for SettingsSummary {
             terminal_padding: "10".to_string(),
             terminal_line_height: "1.45".to_string(),
             terminal_scrollback_lines: "2000".to_string(),
+            terminal_layout_mode: "split".to_string(),
             terminal_copy_on_select: false,
             terminal_right_click_paste: false,
             terminal_link_navigation: true,

@@ -57,6 +57,14 @@ pub(super) fn sanitize_terminal_font_family(value: &str) -> String {
         .collect()
 }
 
+pub(super) fn sanitize_terminal_layout_mode(value: &str) -> String {
+    match value.trim() {
+        "tabs" => "tabs",
+        _ => "split",
+    }
+    .to_string()
+}
+
 fn sanitize_theme_color(value: &str) -> String {
     let normalized = normalize_appearance_name(value);
     let canonical = [

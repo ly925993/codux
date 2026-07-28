@@ -212,6 +212,30 @@ pub(super) fn settings_general_pane(
             None,
             vec![
                 settings_row(
+                    settings_text(
+                        language,
+                        "settings.terminal_layout_mode",
+                        "Terminal Layout",
+                    ),
+                    Some(settings_text(
+                        language,
+                        "settings.terminal_layout_mode.help",
+                        "Switch between simultaneous split panes and one active terminal tab.",
+                    )),
+                    settings_select_impl(
+                        "settings-terminal-layout-mode",
+                        &settings.terminal_layout_mode,
+                        terminal_layout_mode_options(language),
+                        window,
+                        cx,
+                        language,
+                        |app, value, window, cx| {
+                            app.set_terminal_layout_mode(value, window, cx)
+                        },
+                    ),
+                )
+                .into_any_element(),
+                settings_row(
                     settings_text(language, "settings.terminal_font_family", "Terminal Font"),
                     Some(settings_text(
                         language,

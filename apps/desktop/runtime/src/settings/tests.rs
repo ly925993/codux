@@ -11,6 +11,7 @@ mod tests {
         let support_dir = temp_dir("settings-default-scrollback");
         let summary = SettingsService::new(support_dir).summary();
         assert_eq!(summary.terminal_scrollback_lines, "2000");
+        assert_eq!(summary.terminal_layout_mode, "split");
         assert!(!summary.terminal_copy_on_select);
         assert!(!summary.terminal_right_click_paste);
         assert!(summary.terminal_link_navigation);
@@ -20,6 +21,32 @@ mod tests {
         assert!(!summary.agent_prompt_queue_feature_enabled);
         assert!(!summary.agent_task_relay_enabled);
         assert!(summary.wsl_enabled);
+    }
+
+    #[test]
+    fn terminal_layout_mode_persists_and_rejects_unknown_values() {
+        let support_dir = temp_dir("settings-terminal-layout-mode");
+        let service = crate::runtime_state::RuntimeService::new(support_dir.clone());
+
+        let tabs = service
+            .set_terminal_layout_mode("tabs")
+            .expect("set terminal tab layout");
+        assert_eq!(tabs.terminal_layout_mode, "tabs");
+
+        crate::config::flush_all_config_writes();
+        assert_eq!(
+            SettingsService::new(support_dir.clone())
+                .summary()
+                .terminal_layout_mode,
+            "tabs"
+        );
+
+        let sanitized = service
+            .set_terminal_layout_mode("unknown")
+            .expect("sanitize terminal layout mode");
+        assert_eq!(sanitized.terminal_layout_mode, "split");
+
+        fs::remove_dir_all(support_dir).ok();
     }
 
     #[test]

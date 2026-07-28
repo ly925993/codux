@@ -1,4 +1,5 @@
 use super::*;
+use gpui_component::scroll::ScrollableElement as _;
 
 const TERMINAL_SPLIT_BASE_SIZE: Pixels = px(640.0);
 const TERMINAL_SPLIT_BASE_WIDTH: Pixels = px(1200.0);
@@ -20,6 +21,8 @@ fn terminal_layout_key_for_element_id(key: &str) -> String {
 pub(super) struct TerminalMainSplitInput<'a> {
     pub(super) app_entity: gpui::Entity<CoduxApp>,
     pub(super) language: &'a str,
+    pub(super) layout_mode: &'a str,
+    pub(super) active_terminal_id: &'a str,
     pub(super) panes: &'a [TerminalPaneViewSnapshot],
     pub(super) layout_key: &'a str,
     pub(super) top_ratios: &'a [f64],
@@ -38,6 +41,8 @@ pub(super) fn terminal_main_split_area(
     let TerminalMainSplitInput {
         app_entity,
         language,
+        layout_mode,
+        active_terminal_id,
         panes,
         layout_key,
         top_ratios,
@@ -54,6 +59,17 @@ pub(super) fn terminal_main_split_area(
             .size_full()
             .bg(theme::terminal_fill(color(theme::BG_TERMINAL)))
             .into_any_element();
+    }
+
+    if layout_mode == "tabs" {
+        return terminal_tab_area(
+            app_entity,
+            language,
+            panes,
+            active_terminal_id,
+            open_split_menu_pane,
+            cx,
+        );
     }
 
     let pane_count = panes.len();
@@ -96,6 +112,149 @@ pub(super) fn terminal_main_split_area(
         .overflow_hidden()
         .child(content)
         .child(overlay)
+        .into_any_element()
+}
+
+fn terminal_tab_area(
+    app_entity: gpui::Entity<CoduxApp>,
+    language: &str,
+    panes: &[TerminalPaneViewSnapshot],
+    active_terminal_id: &str,
+    open_split_menu_pane: Option<usize>,
+    cx: &mut Context<TerminalWorkspaceView>,
+) -> AnyElement {
+    let active_index = terminal_active_pane_index(panes, active_terminal_id);
+    let active_pane = panes.get(active_index).cloned();
+    let tabs = panes
+        .iter()
+        .enumerate()
+        .map(|(index, pane)| {
+            let active = index == active_index;
+            let select_entity = app_entity.clone();
+            let drop_entity = app_entity.clone();
+            div()
+                .id(SharedString::from(format!("terminal-layout-tab-{index}")))
+                .h(px(30.0))
+                .w(px(168.0))
+                .min_w(px(104.0))
+                .max_w(px(200.0))
+                .px_2()
+                .flex()
+                .flex_shrink()
+                .items_center()
+                .gap_2()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(if active {
+                    cx.theme().border
+                } else {
+                    cx.theme().border.opacity(0.58)
+                })
+                .bg(if active {
+                    theme::elevate(color(theme::BG_TERMINAL), 0.09)
+                } else {
+                    theme::elevate(color(theme::BG_TERMINAL), 0.025)
+                })
+                .text_sm()
+                .text_color(color(if active { theme::TEXT } else { theme::TEXT_DIM }))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::elevate(color(theme::BG_TERMINAL), 0.12)))
+                // The shared pane drag handle remains functional in tab mode by
+                // treating tab headers as lightweight reorder drop targets.
+                .drag_over::<TerminalPaneDrag>(|style, _drag, _window, _cx| {
+                    style.bg(color(theme::ACCENT).opacity(0.12))
+                })
+                .on_drop(
+                    cx.listener(move |_view, drag: &TerminalPaneDrag, window, cx| {
+                        let from_index = drag.pane_index;
+                        defer_terminal_workspace_app_update(
+                            drop_entity.clone(),
+                            window,
+                            cx,
+                            move |app, _window, app_cx| {
+                                app.swap_terminal_top_panes(from_index, index, app_cx);
+                            },
+                        );
+                        cx.stop_propagation();
+                    }),
+                )
+                .on_click(move |_, window, cx| {
+                    cx.update_entity(&select_entity, |app, cx| {
+                        app.select_terminal_pane(index, window, cx);
+                    });
+                })
+                .child(
+                    Icon::new(HeroIconName::CommandLine)
+                        .size_3p5()
+                        .flex_none()
+                        .text_color(color(if active {
+                            theme::ACCENT
+                        } else {
+                            theme::TEXT_DIM
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(pane.title.clone()),
+                )
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .child(
+            div()
+                // Tabs shrink to a readable minimum first; overflow then uses
+                // the reserved lower strip for a horizontal scrollbar.
+                .h(px(40.0))
+                .w_full()
+                .flex_none()
+                .flex()
+                .border_b_1()
+                .border_color(color(theme::BORDER_SOFT))
+                .bg(theme::elevate(color(theme::BG_TERMINAL), 0.035))
+                .child(
+                    div()
+                        .h_full()
+                        .w_full()
+                        .min_w_0()
+                        .px_1()
+                        .pt(px(3.0))
+                        .pb(px(7.0))
+                        .flex()
+                        .items_start()
+                        .gap_1()
+                        .overflow_x_scrollbar()
+                        .children(tabs),
+                ),
+        )
+        .child(
+            div().flex_1().min_w_0().min_h_0().overflow_hidden().child(
+                active_pane
+                    .map(|pane| {
+                        terminal_pane(
+                            app_entity,
+                            active_index,
+                            language,
+                            panes.len(),
+                            pane,
+                            open_split_menu_pane,
+                            false,
+                            cx,
+                        )
+                    })
+                    .unwrap_or_else(|| div().size_full().into_any_element()),
+            ),
+        )
         .into_any_element()
 }
 
@@ -398,6 +557,7 @@ fn terminal_split_node_element(
                     render_context.pane_count,
                     slot,
                     render_context.open_split_menu_pane,
+                    true,
                     cx,
                 )
             })
@@ -549,6 +709,7 @@ fn terminal_pane(
     pane_count: usize,
     slot: TerminalPaneViewSnapshot,
     open_split_menu_pane: Option<usize>,
+    show_split_button: bool,
     cx: &mut Context<TerminalWorkspaceView>,
 ) -> AnyElement {
     let close_id = SharedString::from(format!("terminal-pane-close-{index}"));
@@ -600,6 +761,8 @@ fn terminal_pane(
                         .into_any_element(),
                 }),
         )
+        // Both layouts share terminal actions. Tab mode substitutes one plain
+        // new-terminal action for the directional split control.
         .when(!search_open, |pane| {
             pane.child(
                 div()
@@ -616,9 +779,10 @@ fn terminal_pane(
                     .group_hover("terminal-pane", |style| style.opacity(1.0))
                     // The popover overlay lives outside the group, so hovering the
                     // menu would fade the controls out — pin them while it's open.
-                    .when(open_split_menu_pane == Some(index), |style| {
-                        style.opacity(1.0)
-                    })
+                    .when(
+                        show_split_button && open_split_menu_pane == Some(index),
+                        |style| style.opacity(1.0),
+                    )
                     .child(terminal_pane_drag_handle(app_entity.clone(), index, cx))
                     .child(terminal_pane_control_button(
                         app_entity.clone(),
@@ -646,13 +810,30 @@ fn terminal_pane(
                         cx,
                         move |app, window, cx| app.collapse_terminal_pane(index, window, cx),
                     ))
-                    .child(terminal_pane_split_button(
-                        app_entity.clone(),
-                        add_id,
-                        index,
-                        open_split_menu_pane,
-                        cx,
-                    ))
+                    .when(show_split_button, |controls| {
+                        controls.child(terminal_pane_split_button(
+                            app_entity.clone(),
+                            add_id.clone(),
+                            index,
+                            open_split_menu_pane,
+                            cx,
+                        ))
+                    })
+                    .when(!show_split_button, |controls| {
+                        controls.child(terminal_pane_control_button(
+                            app_entity.clone(),
+                            add_id,
+                            HeroIconName::Plus,
+                            SharedString::from(workspace_i18n(
+                                language,
+                                "terminal.tab.new",
+                                "New Terminal",
+                            )),
+                            pane_count < codux_runtime::terminal_layout::TERMINAL_SPLIT_CAP,
+                            cx,
+                            |app, window, cx| app.split_terminal(window, cx),
+                        ))
+                    })
                     .child(terminal_pane_control_button(
                         app_entity,
                         close_id,

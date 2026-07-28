@@ -31,6 +31,13 @@ impl SettingsService {
         self.update_string("terminalShell", shell.trim().to_string())
     }
 
+    pub fn set_terminal_layout_mode(&self, mode: &str) -> Result<SettingsSummary, String> {
+        self.update_string(
+            "terminalLayoutMode",
+            sanitize_terminal_layout_mode(mode),
+        )
+    }
+
     pub fn toggle_terminal_paste_images_as_paths(&self) -> Result<SettingsSummary, String> {
         let mut raw = self.raw_settings();
         let current = raw

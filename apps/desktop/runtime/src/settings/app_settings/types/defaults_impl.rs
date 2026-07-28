@@ -135,6 +135,7 @@ impl Default for AppSettings {
             terminal_font_family: String::new(),
             terminal_font_size: default_terminal_font_size(),
             terminal_scrollback_lines: default_terminal_scrollback_lines(),
+            terminal_layout_mode: default_terminal_layout_mode(),
             terminal_copy_on_select: false,
             terminal_right_click_paste: false,
             terminal_link_navigation: true,

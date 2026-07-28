@@ -85,8 +85,8 @@ impl Render for WorkspaceBodyView {
                     view.update(app_cx, |view, cx| view.set_snapshot(snapshot, cx));
                     view.clone()
                 } else {
-                    let view =
-                        app_cx.new(|_| TerminalWorkspaceView::new(app_entity.clone(), snapshot));
+                    let view = app_cx
+                        .new(|cx| TerminalWorkspaceView::new(app_entity.clone(), snapshot, cx));
                     self.terminal_workspace_view = Some(view.clone());
                     view
                 };

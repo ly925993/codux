@@ -413,6 +413,7 @@ impl CoduxApp {
             db_draft_ssl_mode: "prefer".to_string(),
             db_draft_read_only: true,
             ssh_draft_open: false,
+            ssh_saving: false,
             ssh_testing: false,
             ssh_test_result: None,
             ssh_draft_id: None,

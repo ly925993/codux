@@ -143,15 +143,12 @@ impl SSHService {
 
     pub fn summary(&self) -> SSHSummary {
         let wrapper_available = self.wrapper_path.is_file();
-        let Some(profiles): Option<Vec<SSHConnectionProfile>> =
-            crate::config::ConfigDocumentStore::for_file(self.profiles_path.clone()).snapshot_as()
-        else {
-            return SSHSummary {
-                wrapper_available,
-                error: Some("Unable to load ssh_profiles.json".to_string()),
-                ..Default::default()
-            };
-        };
+        // Missing, empty, or legacy `null` documents all represent no saved profiles.
+        // The mutable store repairs that snapshot on the first profile operation.
+        let profiles: Vec<SSHConnectionProfile> =
+            crate::config::ConfigDocumentStore::for_file(self.profiles_path.clone())
+                .snapshot_as()
+                .unwrap_or_default();
         let mut profiles = profiles
             .into_iter()
             .map(|profile| SSHProfileSummary {

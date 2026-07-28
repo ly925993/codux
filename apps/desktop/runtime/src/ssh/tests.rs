@@ -111,6 +111,37 @@ fn ssh_store_uses_shared_config_document_snapshot() {
     fs::remove_dir_all(support_dir).ok();
 }
 
+#[test]
+fn ssh_store_recovers_from_legacy_null_document() {
+    let support_dir = std::env::temp_dir().join(format!("codux-ssh-null-{}", Uuid::new_v4()));
+    fs::create_dir_all(&support_dir).unwrap();
+    fs::write(ssh_profiles_file_path_in(support_dir.clone()), "null\n").unwrap();
+
+    let service = SSHService::new(support_dir.clone(), support_dir.join("runtime-assets"));
+    let summary = service.summary();
+    assert!(summary.error.is_none());
+    assert!(summary.profiles.is_empty());
+
+    let store = SSHStore::from_support_dir(support_dir.clone());
+    let snapshot = store
+        .upsert(SSHProfileUpsertRequest {
+            id: Some("profile-after-null".to_string()),
+            name: "Recovered".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            credential_kind: "none".to_string(),
+            private_key_path: None,
+            password: None,
+            key_passphrase: None,
+        })
+        .unwrap();
+    assert_eq!(snapshot.profiles.len(), 1);
+    assert_eq!(snapshot.profiles[0].id, "profile-after-null");
+
+    fs::remove_dir_all(support_dir).ok();
+}
+
 #[cfg(not(windows))]
 #[test]
 fn codux_ssh_remote_command_exits_after_noninteractive_password_auth() {

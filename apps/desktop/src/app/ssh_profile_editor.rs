@@ -76,6 +76,7 @@ pub(in crate::app) fn ssh_profile_editor_workspace(
     cx: &mut Context<CoduxApp>,
 ) -> impl IntoElement {
     let labels = SshProfileEditorLabels::load(&app.state.settings.language);
+    let ssh_saving = app.ssh_saving;
     let test_result = app.ssh_test_result.clone();
     let footer =
         div()
@@ -114,14 +115,18 @@ pub(in crate::app) fn ssh_profile_editor_workspace(
                             |app, _event, window, cx| app.test_ssh_profile_draft(window, cx),
                         )
                         .loading(ssh_testing)
-                        .disabled(ssh_testing),
+                        .disabled(ssh_testing || ssh_saving),
                     )
-                    .child(dialog_primary_button(
-                        "ssh-editor-save",
-                        labels.save.clone(),
-                        cx,
-                        |app, _event, window, cx| app.save_ssh_profile_draft(window, cx),
-                    )),
+                    .child(
+                        dialog_primary_button(
+                            "ssh-editor-save",
+                            labels.save.clone(),
+                            cx,
+                            |app, _event, window, cx| app.save_ssh_profile_draft(window, cx),
+                        )
+                        .loading(ssh_saving)
+                        .disabled(ssh_saving || ssh_testing),
+                    ),
             );
     child_window_shell(
         if app.ssh_draft_id.is_some() {

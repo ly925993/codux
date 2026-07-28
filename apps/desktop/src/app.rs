@@ -49,7 +49,10 @@ use codux_runtime::{
     runtime_bridge::RuntimeInventory,
     runtime_state::{FileEntry, FileKind, ProjectInfo, RuntimeService, RuntimeState},
     settings::{SettingsSummary, locale_from_language_setting},
-    ssh::{SSHConnectionProfile, SSHProfileSummary, SSHProfileUpsertRequest, SSHSummary},
+    ssh::{
+        SSHConnectionProfile, SSHProfileSummary, SSHProfileUpsertRequest, SSHProfilesSnapshot,
+        SSHSummary,
+    },
     terminal_layout::{
         SplitAxis, TerminalLayoutSummary, TerminalPaneSummary, TerminalSplitNode,
         TerminalTabSummary, TerminalTopGrid,

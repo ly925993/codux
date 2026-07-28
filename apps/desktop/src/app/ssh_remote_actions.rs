@@ -367,16 +367,65 @@ impl CoduxApp {
     }
 
     pub(super) fn save_ssh_profile_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh_saving || self.ssh_testing {
+            return;
+        }
         let request = match self.ssh_draft_request() {
             Ok(request) => request,
             Err(error) => {
+                self.set_ssh_test_result(error.clone(), false);
                 self.status_message = format!("failed to save SSH profile: {error}");
                 self.invalidate_remote_panel(cx);
                 return;
             }
         };
         let requested_id = request.id.clone();
-        match self.runtime_service.upsert_ssh_profile(request) {
+        let service = self.runtime_service.clone();
+        let window_handle = window.window_handle();
+        self.ssh_saving = true;
+        self.status_message = "saving SSH profile".to_string();
+        self.runtime_trace("ssh", "ssh_profile_save queued");
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let result = codux_runtime::async_runtime::run_limited_blocking(move || {
+                let started_at = std::time::Instant::now();
+                service.runtime_trace_frontend("ssh", "ssh_profile_save start");
+                let result = service.upsert_ssh_profile(request);
+                service.runtime_trace_frontend(
+                    "ssh",
+                    &format!(
+                        "ssh_profile_save {} elapsed_ms={}",
+                        if result.is_ok() { "ok" } else { "failed" },
+                        started_at.elapsed().as_millis()
+                    ),
+                );
+                result
+            })
+            .await
+            .unwrap_or_else(|error| Err(format!("failed to join SSH profile save: {error}")));
+
+            if result.is_ok() {
+                publish_ssh_update();
+                publish_child_window_update(ChildWindowUpdateKind::Ssh);
+            }
+            let _ = window_handle.update(cx, |_root, window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.apply_ssh_profile_save_result(result, requested_id, window, cx);
+                });
+            });
+        })
+        .detach();
+        self.invalidate_remote_panel(cx);
+    }
+
+    fn apply_ssh_profile_save_result(
+        &mut self,
+        result: Result<SSHProfilesSnapshot, String>,
+        requested_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ssh_saving = false;
+        match result {
             Ok(snapshot) => {
                 self.state.ssh = self.runtime_service.reload_ssh(self.runtime.root.clone());
                 self.selected_ssh_profile_id = requested_id.or_else(|| {
@@ -389,13 +438,14 @@ impl CoduxApp {
                 self.normalize_selected_ssh_profile();
                 self.ssh_draft_open = false;
                 self.status_message = "SSH profile saved".to_string();
-                publish_ssh_update();
-                publish_child_window_update(ChildWindowUpdateKind::Ssh);
                 if self.window_mode == AppWindowMode::SshProfileEditor {
                     window.remove_window();
                 }
             }
-            Err(error) => self.status_message = format!("failed to save SSH profile: {error}"),
+            Err(error) => {
+                self.set_ssh_test_result(error.clone(), false);
+                self.status_message = format!("failed to save SSH profile: {error}");
+            }
         }
         self.invalidate_remote_panel(cx);
     }
@@ -427,6 +477,9 @@ impl CoduxApp {
     }
 
     pub(super) fn test_ssh_profile_draft(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh_saving {
+            return;
+        }
         if self.ssh_testing {
             self.status_message = "SSH test is already running".to_string();
             self.set_ssh_test_result(self.ssh_test_testing_message(), true);

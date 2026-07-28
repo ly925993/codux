@@ -606,6 +606,11 @@ fn task_column_content(
                         .overflow_hidden()
                         .child(gpui::AnyView::from(worktree_list_view)),
                 )
+                .when(sessions_collapsed, |this| {
+                    // Collapsed terminal and history headings form a bottom dock.
+                    // A flex spacer restores that placement without measuring the sidebar.
+                    this.child(div().flex_1().min_h_0())
+                })
                 .child(
                     div()
                         .flex_none()

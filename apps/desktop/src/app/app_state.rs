@@ -384,6 +384,7 @@ pub struct CoduxApp {
     pub(in crate::app) db_draft_ssl_mode: String,
     pub(in crate::app) db_draft_read_only: bool,
     pub(in crate::app) ssh_draft_open: bool,
+    pub(in crate::app) ssh_saving: bool,
     pub(in crate::app) ssh_testing: bool,
     pub(in crate::app) ssh_test_result: Option<SSHProfileTestDisplay>,
     pub(in crate::app) ssh_draft_id: Option<String>,

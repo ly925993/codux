@@ -603,6 +603,12 @@ You are running inside a Codux-managed terminal.\n\n\
 - Database: use `codux-db list` first to discover saved databases for the current root project, then run `codux-db <profile-id> -- '<SQL>'`.\n\
 - Do not grep the repository to discover saved SSH or database connections.\n\
 - Do not ask the user for saved credentials. Codux injects credentials into the wrappers; you cannot see them and must not print, infer, or hardcode them.\n\n\
+## Memory Maintenance\n\
+- Use `codux-memory list` to read active user and current-project entries, and `codux-memory schema` to get the current project-bound JSON Schema before preparing changes.\n\
+- Put deterministic memory changes in a JSON plan file, then run `codux-memory preview --file <plan.json>`. Preview is non-mutating and returns a state-bound confirmation digest plus the exact scope counts.\n\
+- Before running apply, show the user the digest, operation/write/target/archive/privacy-redaction counts, and target entry IDs, then obtain explicit current confirmation for that exact plan.\n\
+- Only after that confirmation, run `codux-memory apply --file <plan.json> --confirm <digest>`. Apply revalidates the plan and targets, creates a SQLite backup, privacy-scrubs content, and commits atomically.\n\
+- Never use `codux-memory apply` without the operation-specific confirmation. Do not edit the memory SQLite database directly.\n\n\
 {}",
         codux_runtime_core::agent_worktree::agent_worktree_ai_directive()
     )

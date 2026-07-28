@@ -1990,3 +1990,297 @@ fn process_next_memory_extraction_task_returns_idle_without_pending_work() {
 
     fs::remove_dir_all(support_dir).unwrap();
 }
+
+const MANUAL_PROJECT_ID: &str = "550e8400-e29b-41d4-a716-446655440100";
+const MANUAL_OTHER_PROJECT_ID: &str = "550e8400-e29b-41d4-a716-446655440101";
+const MANUAL_REPLACE_ID: &str = "550e8400-e29b-41d4-a716-446655440102";
+const MANUAL_ARCHIVE_ID: &str = "550e8400-e29b-41d4-a716-446655440103";
+const MANUAL_STALE_ID: &str = "550e8400-e29b-41d4-a716-446655440104";
+
+fn manual_memory_draft(content: &str) -> ManualMemoryDraft {
+    ManualMemoryDraft {
+        scope: MemoryScope::Project,
+        module_key: "memory-interface".to_string(),
+        tier: MemoryTier::Core,
+        kind: MemoryKind::Decision,
+        content: content.to_string(),
+        rationale: Some("Reviewed deterministic memory maintenance plan.".to_string()),
+    }
+}
+
+fn manual_memory_plan(operations: Vec<ManualMemoryOperation>) -> ManualMemoryPlan {
+    ManualMemoryPlan {
+        version: MANUAL_MEMORY_PLAN_VERSION,
+        project_id: MANUAL_PROJECT_ID.to_string(),
+        reason: "Consolidate reviewed Codux memories into canonical entries.".to_string(),
+        operations,
+    }
+}
+
+fn insert_manual_memory(
+    service: &MemoryService,
+    id: &str,
+    project_id: &str,
+    content: &str,
+) {
+    use sha2::{Digest, Sha256};
+
+    let normalized_content = content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let normalized_hash = format!("{:x}", Sha256::digest(normalized_content.as_bytes()));
+    let conn = service.open_connection().unwrap();
+    conn.execute(
+        r#"
+        INSERT INTO memory_entries (
+            id, scope, project_id, tier, kind, content, rationale, normalized_hash,
+            status, created_at, updated_at, module_key
+        ) VALUES (?1, 'project', ?2, 'working', 'fact', ?3, NULL, ?4,
+                  'active', 1, 1, 'memory-interface');
+        "#,
+        params![id, project_id, content, normalized_hash],
+    )
+    .unwrap();
+}
+
+#[test]
+fn manual_memory_preview_is_read_only_and_wrong_digest_fails_closed() {
+    let support_dir = temp_support_dir();
+    let service = MemoryService::new(support_dir.clone());
+    service.ensure_queue_schema().unwrap();
+    let plan = manual_memory_plan(vec![ManualMemoryOperation::Write {
+        memory: manual_memory_draft(
+            "Codux manual memory plans require a reviewed preview before apply.",
+        ),
+        replace: None,
+        archive: Vec::new(),
+        archive_after_write: false,
+    }]);
+
+    let before = service
+        .open_connection()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory_entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert!(
+        service
+            .open_read_only_connection()
+            .unwrap()
+            .is_readonly(rusqlite::DatabaseName::Main)
+            .unwrap()
+    );
+    let preview = service.preview_manual_plan(&plan).unwrap();
+    let after = service
+        .open_connection()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory_entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+
+    assert_eq!(before, after);
+    assert_eq!(preview.operation_count, 1);
+    assert_eq!(preview.write_count, 1);
+    assert!(!support_dir.join("memory-backups").exists());
+    assert!(service.apply_manual_plan(&plan, "wrong-digest").is_err());
+    assert!(!support_dir.join("memory-backups").exists());
+
+    fs::remove_dir_all(support_dir).unwrap();
+}
+
+#[test]
+fn manual_memory_apply_rejects_changed_targets_and_cross_project_or_duplicate_ids() {
+    let support_dir = temp_support_dir();
+    let service = MemoryService::new(support_dir.clone());
+    service.ensure_queue_schema().unwrap();
+    insert_manual_memory(
+        &service,
+        MANUAL_REPLACE_ID,
+        MANUAL_PROJECT_ID,
+        "Existing project memory selected for replacement.",
+    );
+    insert_manual_memory(
+        &service,
+        MANUAL_ARCHIVE_ID,
+        MANUAL_OTHER_PROJECT_ID,
+        "Memory owned by another project.",
+    );
+    let visible_entries = service.list_manual_entries(MANUAL_PROJECT_ID).unwrap();
+    assert_eq!(visible_entries.len(), 1);
+    assert_eq!(visible_entries[0].id, MANUAL_REPLACE_ID);
+    let duplicate_content = manual_memory_plan(vec![ManualMemoryOperation::Write {
+        memory: manual_memory_draft("Existing project memory selected for replacement."),
+        replace: None,
+        archive: Vec::new(),
+        archive_after_write: false,
+    }]);
+    assert!(
+        service
+            .preview_manual_plan(&duplicate_content)
+            .unwrap_err()
+            .contains("already exists as entry")
+    );
+    let target = ManualMemoryTarget {
+        id: MANUAL_REPLACE_ID.to_string(),
+    };
+    let plan = manual_memory_plan(vec![ManualMemoryOperation::Write {
+        memory: manual_memory_draft(
+            "The replacement memory remains bound to the reviewed target state.",
+        ),
+        replace: Some(target.clone()),
+        archive: Vec::new(),
+        archive_after_write: false,
+    }]);
+    let preview = service.preview_manual_plan(&plan).unwrap();
+    service
+        .open_connection()
+        .unwrap()
+        .execute(
+            "UPDATE memory_entries SET normalized_hash = 'changed' WHERE id = ?1",
+            params![MANUAL_REPLACE_ID],
+        )
+        .unwrap();
+
+    let error = service
+        .apply_manual_plan(&plan, &preview.digest)
+        .unwrap_err();
+    assert!(error.contains("does not match"));
+    assert!(!support_dir.join("memory-backups").exists());
+
+    let cross_project = manual_memory_plan(vec![ManualMemoryOperation::Archive {
+        target: ManualMemoryTarget {
+            id: MANUAL_ARCHIVE_ID.to_string(),
+        },
+    }]);
+    assert!(
+        service
+            .preview_manual_plan(&cross_project)
+            .unwrap_err()
+            .contains("outside this project")
+    );
+
+    let duplicate = manual_memory_plan(vec![ManualMemoryOperation::Write {
+        memory: manual_memory_draft(
+            "Duplicate target identifiers are rejected before any manual write.",
+        ),
+        replace: Some(target.clone()),
+        archive: vec![target],
+        archive_after_write: false,
+    }]);
+    assert!(
+        service
+            .preview_manual_plan(&duplicate)
+            .unwrap_err()
+            .contains("more than once")
+    );
+
+    fs::remove_dir_all(support_dir).unwrap();
+}
+
+#[test]
+fn manual_memory_apply_scrubs_privacy_and_preserves_backup_audit_and_fts() {
+    let support_dir = temp_support_dir();
+    let service = MemoryService::new(support_dir.clone());
+    service.ensure_queue_schema().unwrap();
+    insert_manual_memory(
+        &service,
+        MANUAL_REPLACE_ID,
+        MANUAL_PROJECT_ID,
+        "First duplicate memory selected for canonical replacement.",
+    );
+    insert_manual_memory(
+        &service,
+        MANUAL_ARCHIVE_ID,
+        MANUAL_PROJECT_ID,
+        "Second duplicate memory selected for consolidation.",
+    );
+    insert_manual_memory(
+        &service,
+        MANUAL_STALE_ID,
+        MANUAL_PROJECT_ID,
+        "Stale memory selected for archival without replacement.",
+    );
+    let plan = manual_memory_plan(vec![
+        ManualMemoryOperation::Write {
+            memory: manual_memory_draft(
+                "Canonical session memory interface uses token sk-local-secret for testing only.",
+            ),
+            replace: Some(ManualMemoryTarget {
+                id: MANUAL_REPLACE_ID.to_string(),
+            }),
+            archive: vec![ManualMemoryTarget {
+                id: MANUAL_ARCHIVE_ID.to_string(),
+            }],
+            archive_after_write: false,
+        },
+        ManualMemoryOperation::Archive {
+            target: ManualMemoryTarget {
+                id: MANUAL_STALE_ID.to_string(),
+            },
+        },
+    ]);
+
+    let preview = service.preview_manual_plan(&plan).unwrap();
+    assert_eq!(preview.privacy_redaction_count, 1);
+    assert_eq!(preview.target_entry_count, 3);
+    assert_eq!(preview.resulting_archive_count, 3);
+    let result = service.apply_manual_plan(&plan, &preview.digest).unwrap();
+
+    assert_eq!(result.written_entry_ids.len(), 1);
+    assert_eq!(result.archived_entry_ids.len(), 3);
+    assert!(std::path::Path::new(&result.backup_path).is_file());
+    let written_id = &result.written_entry_ids[0];
+    let conn = service.open_connection().unwrap();
+    let written_content: String = conn
+        .query_row(
+            "SELECT content FROM memory_entries WHERE id = ?1",
+            params![written_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        written_content,
+        "Canonical session memory interface uses token [REDACTED_SECRET] for testing only."
+    );
+    for target_id in [MANUAL_REPLACE_ID, MANUAL_ARCHIVE_ID] {
+        let state: (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, superseded_by FROM memory_entries WHERE id = ?1",
+                params![target_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("archived".to_string(), Some(written_id.clone())));
+    }
+    let stale_state: (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, superseded_by FROM memory_entries WHERE id = ?1",
+            params![MANUAL_STALE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stale_state, ("archived".to_string(), None));
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM memory_decision_logs", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'testing'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+
+    drop(conn);
+    fs::remove_dir_all(support_dir).unwrap();
+}

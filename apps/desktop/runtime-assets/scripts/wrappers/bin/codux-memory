@@ -1,0 +1,10 @@
+#!/bin/zsh
+set -uo pipefail
+
+wrapper_helper="${0:A:h}/../codux-wrapper-helper"
+if [[ ! -x "${wrapper_helper}" ]]; then
+  print -u2 -- "codux-memory: bundled helper is missing"
+  exit 127
+fi
+
+exec "${wrapper_helper}" --codux-wrapper-helper memory-plan "$@"

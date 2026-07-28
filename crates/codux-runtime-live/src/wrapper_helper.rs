@@ -13,6 +13,7 @@ use std::{
 
 const DB_QUERY_TIMEOUT_SECONDS: u64 = 15;
 const DB_QUERY_MAX_ROWS: usize = 100;
+const MEMORY_PLAN_MAX_FILE_BYTES: u64 = 1024 * 1024;
 const AGENT_WORKTREE_ERROR_OSC: &[u8] = b"\x1b]9;4;2\x07";
 const DB_QUERY_MAX_CELL_CHARS: usize = 240;
 const DB_URL_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -73,11 +74,206 @@ pub fn handle_args(args: &[String]) -> Result<bool, String> {
         "ssh-askpass" => print_ssh_askpass(&args[2..]),
         "db-list-profiles" => print_db_profiles(),
         "db-query" => print_db_query(),
+        "memory-plan" => run_memory_plan_command(&args[2..]),
         "agent-worktree" => run_agent_worktree_command(&args[2..]),
         "agent-worktree-launch" => launch_agent_worktree_prompt(),
         _ => return Err(format!("unknown wrapper helper subcommand: {subcommand}")),
     }?;
     Ok(true)
+}
+
+fn run_memory_plan_command(args: &[String]) -> Result<(), String> {
+    // The wrapper never accepts support paths or project IDs from CLI input;
+    // both boundaries come from the Codux-created terminal environment.
+    let support_dir = PathBuf::from(env_value("DMUX_APP_SUPPORT_ROOT"));
+    if support_dir.as_os_str().is_empty() {
+        return Err("codux-memory: missing Codux application support context".to_string());
+    }
+    let project_id = env_value("DMUX_PROJECT_ID");
+    if project_id.trim().is_empty() {
+        return Err("codux-memory: missing Codux project context".to_string());
+    }
+    let value = memory_plan_command(args, &support_dir, &project_id)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn memory_plan_command(
+    args: &[String],
+    support_dir: &Path,
+    project_id: &str,
+) -> Result<Value, String> {
+    let service = codux_memory::MemoryService::new(support_dir.to_path_buf());
+    match args.first().map(String::as_str) {
+        Some("list") if args.len() == 1 => {
+            let entries = service
+                .list_manual_entries(project_id)
+                .map_err(|error| format!("codux-memory: {error}"))?;
+            Ok(json!({ "projectId": project_id.trim(), "entries": entries }))
+        }
+        Some("schema") if args.len() == 1 => Ok(memory_plan_schema(project_id)),
+        Some("preview") => {
+            let (path, confirmation) = parse_memory_plan_options(&args[1..], false)?;
+            debug_assert!(confirmation.is_none());
+            let plan = load_memory_plan(&path, project_id)?;
+            let preview = service
+                .preview_manual_plan(&plan)
+                .map_err(|error| format!("codux-memory: {error}"))?;
+            serde_json::to_value(preview).map_err(|error| error.to_string())
+        }
+        Some("apply") => {
+            let (path, confirmation) = parse_memory_plan_options(&args[1..], true)?;
+            let plan = load_memory_plan(&path, project_id)?;
+            let result = service
+                .apply_manual_plan(&plan, confirmation.as_deref().unwrap_or_default())
+                .map_err(|error| format!("codux-memory: {error}"))?;
+            serde_json::to_value(result).map_err(|error| error.to_string())
+        }
+        _ => Err(memory_plan_usage()),
+    }
+}
+
+fn memory_plan_schema(project_id: &str) -> Value {
+    // Publishing a project-bound schema lets agents construct plans without
+    // exposing the SQLite schema or guessing the serialized Rust field names.
+    let target = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": { "id": { "type": "string", "format": "uuid" } }
+    });
+    let memory = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "moduleKey", "tier", "kind", "content"],
+        "properties": {
+            "scope": { "enum": ["user", "project"] },
+            "moduleKey": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "tier": { "enum": ["core", "working", "archive"] },
+            "kind": { "enum": ["preference", "decision", "fact", "bug_lesson"] },
+            "content": { "type": "string", "maxLength": 4000 },
+            "rationale": { "type": ["string", "null"], "maxLength": 1000 }
+        }
+    });
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Codux manual memory plan",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "projectId", "reason", "operations"],
+        "properties": {
+            "version": { "const": codux_memory::MANUAL_MEMORY_PLAN_VERSION },
+            "projectId": { "const": project_id.trim() },
+            "reason": { "type": "string", "minLength": 8 },
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 200,
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["op", "memory"],
+                            "properties": {
+                                "op": { "const": "write" },
+                                "memory": memory,
+                                "replace": { "oneOf": [target.clone(), { "type": "null" }] },
+                                "archive": { "type": "array", "items": target.clone() },
+                                "archiveAfterWrite": { "type": "boolean" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["op", "target"],
+                            "properties": {
+                                "op": { "const": "archive" },
+                                "target": target
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    })
+}
+
+fn parse_memory_plan_options(
+    args: &[String],
+    confirmation_required: bool,
+) -> Result<(PathBuf, Option<String>), String> {
+    let mut path = None;
+    let mut confirmation = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--file" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(memory_plan_usage)?;
+                if path.replace(PathBuf::from(value)).is_some() {
+                    return Err("codux-memory: --file may only be specified once".to_string());
+                }
+            }
+            "--confirm" if confirmation_required => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(memory_plan_usage)?;
+                if confirmation.replace(value.to_string()).is_some() {
+                    return Err("codux-memory: --confirm may only be specified once".to_string());
+                }
+            }
+            _ => return Err(memory_plan_usage()),
+        }
+        index += 1;
+    }
+    let path = path.ok_or_else(memory_plan_usage)?;
+    if confirmation_required && confirmation.is_none() {
+        return Err(memory_plan_usage());
+    }
+    Ok((path, confirmation))
+}
+
+fn load_memory_plan(
+    path: &Path,
+    project_id: &str,
+) -> Result<codux_memory::ManualMemoryPlan, String> {
+    // File-only payloads keep shell history free of memory content and allow a
+    // human to review the exact bytes whose digest will authorize apply.
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("codux-memory: unable to inspect plan file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("codux-memory: plan path is not a file".to_string());
+    }
+    if metadata.len() > MEMORY_PLAN_MAX_FILE_BYTES {
+        return Err(format!(
+            "codux-memory: plan file exceeds {MEMORY_PLAN_MAX_FILE_BYTES} bytes"
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("codux-memory: unable to read plan file: {error}"))?;
+    let plan = serde_json::from_slice::<codux_memory::ManualMemoryPlan>(&bytes)
+        .map_err(|error| format!("codux-memory: invalid plan JSON: {error}"))?;
+    if plan.project_id.trim() != project_id.trim() {
+        return Err("codux-memory: plan projectId does not match this terminal".to_string());
+    }
+    Ok(plan)
+}
+
+fn memory_plan_usage() -> String {
+    "usage: codux-memory list\n       codux-memory schema\n       codux-memory preview --file <plan.json>\n       codux-memory apply --file <plan.json> --confirm <digest>".to_string()
 }
 
 fn print_tool_memory_injection() -> Result<(), String> {
@@ -1621,6 +1817,8 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
 
+    const MEMORY_TEST_PROJECT_ID: &str = "550e8400-e29b-41d4-a716-446655440200";
+
     #[test]
     fn handle_args_ignores_non_helper_invocations() {
         assert!(!handle_args(&["--version".to_string()]).unwrap());
@@ -1637,6 +1835,142 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn memory_plan_command_previews_applies_and_lists_temp_database() {
+        use codux_memory::{
+            MANUAL_MEMORY_PLAN_VERSION, ManualMemoryDraft, ManualMemoryOperation, ManualMemoryPlan,
+            MemoryKind, MemoryScope, MemoryTier,
+        };
+
+        let support_dir =
+            std::env::temp_dir().join(format!("codux-memory-wrapper-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&support_dir).unwrap();
+        let conn = rusqlite::Connection::open(support_dir.join("memory.sqlite3")).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE memory_entries (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                project_id TEXT,
+                tool_id TEXT,
+                tier TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                rationale TEXT,
+                source_tool TEXT,
+                source_session_id TEXT,
+                source_fingerprint TEXT,
+                normalized_hash TEXT NOT NULL DEFAULT '',
+                superseded_by TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                merged_summary_id TEXT,
+                merged_at REAL,
+                archived_at REAL,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed_at REAL,
+                created_at REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL DEFAULT 0,
+                module_key TEXT
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+        let service = codux_memory::MemoryService::new(support_dir.clone());
+        service.list_manual_entries(MEMORY_TEST_PROJECT_ID).unwrap();
+        let plan = ManualMemoryPlan {
+            version: MANUAL_MEMORY_PLAN_VERSION,
+            project_id: MEMORY_TEST_PROJECT_ID.to_string(),
+            reason: "Verify the session-facing manual memory wrapper.".to_string(),
+            operations: vec![ManualMemoryOperation::Write {
+                memory: ManualMemoryDraft {
+                    scope: MemoryScope::Project,
+                    module_key: "wrapper".to_string(),
+                    tier: MemoryTier::Core,
+                    kind: MemoryKind::Decision,
+                    content: "Session memory writes require preview and explicit confirmation."
+                        .to_string(),
+                    rationale: None,
+                },
+                replace: None,
+                archive: Vec::new(),
+                archive_after_write: false,
+            }],
+        };
+        let plan_path = support_dir.join("plan.json");
+        fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+        let plan_path = plan_path.display().to_string();
+
+        let schema = memory_plan_command(
+            &["schema".to_string()],
+            &support_dir,
+            MEMORY_TEST_PROJECT_ID,
+        )
+        .unwrap();
+        assert_eq!(
+            schema.pointer("/properties/projectId/const"),
+            Some(&Value::String(MEMORY_TEST_PROJECT_ID.to_string()))
+        );
+
+        let preview = memory_plan_command(
+            &[
+                "preview".to_string(),
+                "--file".to_string(),
+                plan_path.clone(),
+            ],
+            &support_dir,
+            MEMORY_TEST_PROJECT_ID,
+        )
+        .unwrap();
+        let digest = preview
+            .get("digest")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
+        let applied = memory_plan_command(
+            &[
+                "apply".to_string(),
+                "--file".to_string(),
+                plan_path.clone(),
+                "--confirm".to_string(),
+                digest,
+            ],
+            &support_dir,
+            MEMORY_TEST_PROJECT_ID,
+        )
+        .unwrap();
+        assert_eq!(
+            applied
+                .get("writtenEntryIds")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            1
+        );
+        let listed =
+            memory_plan_command(&["list".to_string()], &support_dir, MEMORY_TEST_PROJECT_ID)
+                .unwrap();
+        assert_eq!(
+            listed
+                .get("entries")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            memory_plan_command(
+                &["preview".to_string(), "--file".to_string(), plan_path,],
+                &support_dir,
+                "550e8400-e29b-41d4-a716-446655440201",
+            )
+            .unwrap_err()
+            .contains("does not match this terminal")
+        );
+
+        fs::remove_dir_all(support_dir).unwrap();
     }
 
     #[test]

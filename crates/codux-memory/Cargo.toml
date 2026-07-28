@@ -7,7 +7,7 @@ edition = "2024"
 codux-llm = { path = "../codux-llm" }
 codux-ai-history = { path = "../codux-ai-history" }
 codux-runtime-core = { path = "../codux-runtime-core" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v5"] }

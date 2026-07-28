@@ -4,6 +4,7 @@ pub mod extraction;
 mod launch;
 mod management;
 mod manual;
+mod manual_write;
 mod privacy;
 mod profile;
 mod queries;
@@ -19,6 +20,7 @@ pub use apply::{
 };
 pub use extraction::{MemoryKind, MemoryScope, MemoryTier};
 pub use launch::launch_artifact_paths;
+pub use manual_write::*;
 use launch::{render_launch_memory_index, render_recent_memory};
 pub use manual::MemoryExtractionEnqueueResult;
 use queries::*;
@@ -27,7 +29,7 @@ pub use queue::{
     MemoryExtractionTask,
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::{fs, path::PathBuf};
 
 impl MemoryService {
@@ -44,6 +46,20 @@ impl MemoryService {
         let connection =
             Connection::open(&self.database_path).map_err(|error| error.to_string())?;
         initialize_memory_connection(&connection)?;
+        Ok(connection)
+    }
+
+    /// Opens the existing store without running PRAGMAs or schema maintenance,
+    /// preserving the no-mutation contract used by list and preview.
+    pub(crate) fn open_read_only_connection(&self) -> Result<Connection, String> {
+        if !self.database_path.is_file() {
+            return Err("memory.sqlite3 not found".to_string());
+        }
+        let connection = Connection::open_with_flags(&self.database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| error.to_string())?;
         Ok(connection)
     }
 

@@ -69,7 +69,7 @@ impl MemoryService {
         Ok(entry)
     }
 
-    fn supersede_entry(
+    pub(in crate::apply) fn supersede_entry(
         &self,
         conn: &Connection,
         old_entry_id: &str,

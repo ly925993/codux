@@ -1,5 +1,6 @@
 mod decision;
 mod helpers;
+mod manual_write;
 mod summary;
 mod types;
 

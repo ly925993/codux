@@ -1,5 +1,5 @@
 impl MemoryService {
-    pub(super) fn record_memory_decision(
+    pub(in crate::apply) fn record_memory_decision(
         &self,
         conn: &Connection,
         decision: MemoryDecisionLog,

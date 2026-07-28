@@ -103,6 +103,16 @@ const RUNTIME_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../apps/desktop/runtime-assets/scripts/wrappers/bin/codux-db.ps1"),
     ),
     (
+        "scripts/wrappers/bin/codux-memory",
+        include_bytes!("../../../../apps/desktop/runtime-assets/scripts/wrappers/bin/codux-memory"),
+    ),
+    (
+        "scripts/wrappers/bin/codux-memory.ps1",
+        include_bytes!(
+            "../../../../apps/desktop/runtime-assets/scripts/wrappers/bin/codux-memory.ps1"
+        ),
+    ),
+    (
         "scripts/wrappers/bin/codux-worktree",
         include_bytes!(
             "../../../../apps/desktop/runtime-assets/scripts/wrappers/bin/codux-worktree"

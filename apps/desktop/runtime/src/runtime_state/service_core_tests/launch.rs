@@ -78,6 +78,12 @@ fn launch_artifacts_include_tool_context_when_memory_is_disabled() {
     assert!(!agents.contains("secret-passphrase"));
     assert!(agents.contains("codux-db list"));
     assert!(agents.contains("codux-db <profile-id> -- '<SQL>'"));
+    assert!(agents.contains("codux-memory list"));
+    assert!(agents.contains("codux-memory schema"));
+    assert!(agents.contains("codux-memory preview --file <plan.json>"));
+    assert!(agents.contains("obtain explicit current confirmation"));
+    assert!(agents.contains("codux-memory apply --file <plan.json> --confirm <digest>"));
+    assert!(agents.contains("Do not edit the memory SQLite database directly"));
     assert!(agents.contains("codux-worktree create"));
     assert!(agents.contains("waits for the child agent to complete"));
     assert!(agents.contains("cast them to text"));
@@ -128,6 +134,10 @@ fn launch_artifacts_include_environment_directive_without_profiles() {
     assert!(agents.starts_with("# Codux Environment Directive"));
     assert!(agents.contains("codux-ssh list"));
     assert!(agents.contains("codux-db list"));
+    assert!(agents.contains("codux-memory list"));
+    assert!(agents.contains("codux-memory schema"));
+    assert!(agents.contains("codux-memory preview --file <plan.json>"));
+    assert!(agents.contains("codux-memory apply --file <plan.json> --confirm <digest>"));
     assert!(agents.contains("codux-worktree create"));
     assert!(agents.contains("# Codux Memory"));
     assert!(!agents.contains("project active entry"));

@@ -1538,6 +1538,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "codux-ai-history",
+ "codux-memory",
  "codux-protocol",
  "codux-runtime-core",
  "codux-terminal-core",
